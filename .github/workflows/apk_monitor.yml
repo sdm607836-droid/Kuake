@@ -1,7 +1,7 @@
 name: Monitor and Upload APK
 
 on:
-  workflow_dispatch:  # 先用手动触发测试，确认没问题后再改回 schedule
+  workflow_dispatch:  # 先手动测试，成功后再改回 schedule
   # schedule:
   #   - cron: '0 * * * *'
 
@@ -25,7 +25,7 @@ jobs:
       - name: Run APK monitor script
         env:
           QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
-          APK_URL: 'https://pan.quark.cn/s/cb0ee2b9ac64#/list/share/f0c75c96e96e4310b96383b4b22040e3'  # 使用2号链接（数字文件夹的）
+          APK_URL: 'https://pan.quark.cn/s/cb0ee2b9ac64#/list/share/f0c75c96e96e4310b96383b4b22040e3'  # 2号链接，含版本文件夹
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: python
         run: |
@@ -33,7 +33,7 @@ jobs:
           import requests
           from bs4 import BeautifulSoup
           from github import Github, GithubException
-          from packaging import version  # 用于版本比较
+          from packaging import version as ver_parser
 
           quark_cookie_str = os.getenv("QUARK_COOKIE")
           url = os.getenv("APK_URL")
@@ -42,12 +42,12 @@ jobs:
               print("QUARK_COOKIE 未设置，请检查 Secrets")
               exit(1)
 
-          # 解析完整的 Cookie 字符串（多个键值对，分号分隔）
           cookies = {}
           for part in quark_cookie_str.split(';'):
+              part = part.strip()
               if '=' in part:
                   key, value = part.split('=', 1)
-                  cookies[key.strip()] = value.strip()
+                  cookies[key] = value
 
           last_version_file = ".last_version"
 
@@ -57,7 +57,7 @@ jobs:
                       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                       "Referer": "https://pan.quark.cn/"
                   }
-                  resp = requests.get(url, cookies=cookies, headers=headers, timeout=20, allow_redirects=True)
+                  resp = requests.get(url, cookies=cookies, headers=headers, timeout=30, allow_redirects=True)
                   resp.raise_for_status()
 
                   print(f"页面状态码: {resp.status_code}")
@@ -66,129 +66,67 @@ jobs:
 
                   soup = BeautifulSoup(resp.text, "html.parser")
 
-                  apk_items = []
-                  folder_items = []
+                  # 打印所有可见文本，便于调试
+                  all_text = ' '.join(soup.stripped_strings)
+                  print("页面所有可见文本预览 (前 500 字):")
+                  print(all_text[:500] + "..." if len(all_text) > 500 else all_text)
 
-                  # 提取所有可能的文件/文件夹元素
-                  for elem in soup.find_all(['div', 'span', 'td', 'a', 'tr', 'li'], recursive=True):
-                      text = elem.get_text(strip=True)
-                      href = elem.get('href') or elem.get('data-url') or elem.get('data-href') or None
+                  version_candidates = []
 
-                      if text:
-                          # 检查 APK 文件
-                          if '.apk' in text.lower():
-                              version_match = text.split('-')[-1].replace('.apk', '').strip() if '-' in text else text
-                              apk_items.append((text, href, version_match))
+                  # 从所有文本中提取可能版本（如 3.6.6, 3.9.7, 20260129）
+                  for text in soup.stripped_strings:
+                      text = text.strip()
+                      if not text:
+                          continue
+                      # 匹配 x.y.z 格式
+                      if text.count('.') == 2 and all(part.isdigit() for part in text.split('.')):
+                          version_candidates.append(text)
+                      # 匹配纯数字长串（如日期）
+                      elif text.isdigit() and len(text) >= 6:
+                          version_candidates.append(text)
+                      # 从 “上传到当前目录 X.Y.Z” 提取
+                      if '上传到当前目录' in text:
+                          parts = text.split()
+                          for p in parts:
+                              if p.count('.') == 2 and all(part.isdigit() for part in p.split('.')):
+                                  version_candidates.append(p)
 
-                          # 检查数字/版本文件夹（如 3.6.6, 20260129）
-                          elif ('上传到当前目录' in text or text.startswith('历史版本')) and ('.' in text or text.isdigit()):
-                              parts = text.split()
-                              for p in parts:
-                                  if (p.count('.') >= 1 and p.replace('.', '').isdigit()) or (p.isdigit() and len(p) >= 6):
-                                      folder_items.append(p)
+                  version_candidates = list(set(version_candidates))
+                  print("提取到的可能版本号/文件夹:", version_candidates)
 
-                  print("检测到的 APK 文件:", apk_items)
-                  print("检测到的版本/日期文件夹:", folder_items)
-
-                  if not apk_items and not folder_items:
-                      print("页面中未找到任何 .apk 或版本文件夹相关内容")
+                  if not version_candidates:
+                      print("未提取到任何版本信息")
                       return
 
-                  # 优先用 APK 文件的版本，如果没有用文件夹
-                  if apk_items:
-                      # 取最新 APK（假设文件名含版本号）
-                      latest_item = sorted(apk_items, key=lambda x: x[2])[-1]
-                      latest_text, latest_href, latest_version = latest_item
-                  elif folder_items:
-                      # 取最大版本/数字
-                      def parse_ver(v):
-                          try:
-                              if '.' in v:
-                                  return version.parse(v)
-                              else:
-                                  return int(v)
-                          except:
-                              return 0
+                  # 排序取最新
+                  def safe_parse(v):
+                      try:
+                          if '.' in v:
+                              return ver_parser.parse(v)
+                          else:
+                              return int(v)  # 日期数字越大越新
+                      except:
+                          return ver_parser.parse("0.0.0")
 
-                      latest_version = max(folder_items, key=parse_ver)
-                      latest_text = latest_version
-                      latest_href = None  # 文件夹无直接 href，需构造
-                  else:
-                      return
-
-                  print(f"发现最新: {latest_text} (版本: {latest_version})")
+                  latest_version = max(version_candidates, key=safe_parse)
+                  print(f"判定最新版本: {latest_version}")
 
                   last_version = None
                   if os.path.exists(last_version_file):
                       with open(last_version_file, "r", encoding="utf-8") as f:
                           last_version = f.read().strip()
 
-                  if str(latest_version) != last_version:
+                  if latest_version != last_version:
                       print(f"发现新版本: {latest_version}")
                       with open(last_version_file, "w", encoding="utf-8") as f:
-                          f.write(str(latest_version))
-
-                      if latest_href:
-                          download_and_upload(latest_href, str(latest_version))
-                      else:
-                          print("无下载链接（可能是文件夹），无法上传。需手动处理或改进脚本。")
+                          f.write(latest_version)
+                      # 当前无 APK href，无法下载；可作为版本变更通知
+                      print("注意: 当前页面无直接 APK 下载链接（列表为空），仅监控版本文件夹变化。")
                   else:
                       print("没有新版本")
 
               except Exception as e:
-                  print(f"获取/解析页面失败: {type(e).__name__} - {str(e)}")
-
-          def download_and_upload(href, version_str):
-              try:
-                  if not href.startswith(('http://', 'https://')):
-                      base = os.getenv("APK_URL").split('#')[0].rstrip('/') + '/'
-                      full_url = base + href.lstrip('/')
-                  else:
-                      full_url = href
-
-                  print(f"即将下载: {full_url}")
-
-                  r = requests.get(full_url, cookies=cookies, stream=True, timeout=60)
-                  r.raise_for_status()
-
-                  safe_version = version_str.replace(' ', '_').replace('/', '-')
-                  filename = f"{safe_version}.apk"
-
-                  with open(filename, "wb") as f:
-                      for chunk in r.iter_content(chunk_size=8192):
-                          f.write(chunk)
-
-                  print(f"下载完成: {filename} ({os.path.getsize(filename)} bytes)")
-
-                  g = Github(os.getenv("GITHUB_TOKEN"))
-                  repo = g.get_repo(os.getenv("GITHUB_REPOSITORY"))
-
-                  try:
-                      release = repo.get_release(version_str)
-                      print(f"Release {version_str} 已存在")
-                  except GithubException as exc:
-                      if exc.status == 404:
-                          release = repo.create_git_release(
-                              tag=version_str,
-                              name=version_str,
-                              message="自动监控上传的 APK",
-                              draft=False,
-                              prerelease=False
-                          )
-                          print(f"创建了新 Release: {version_str}")
-                      else:
-                          raise
-
-                  release.upload_asset(
-                      filename,
-                      name=filename,
-                      content_type="application/vnd.android.package-archive",
-                      label=f"APK - {version_str}"
-                  )
-                  print("Asset 上传成功")
-
-              except Exception as e:
-                  print(f"下载或上传失败: {type(e).__name__} - {str(e)}")
+                  print(f"请求/解析失败: {type(e).__name__} - {str(e)}")
 
           if __name__ == "__main__":
               get_latest_apk()
