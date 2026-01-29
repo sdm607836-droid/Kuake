@@ -1,8 +1,9 @@
 name: Monitor and Upload APK
 
 on:
-  schedule:
-    - cron: '0 * * * *'
+  workflow_dispatch:  # 先用手动触发测试，确认没问题后再改回 schedule
+  # schedule:
+  #   - cron: '0 * * * *'
 
 jobs:
   check_apk:
@@ -37,7 +38,7 @@ jobs:
           url = os.getenv("APK_URL")
 
           if not quark_cookie_str or '=' not in quark_cookie_str:
-              print("QUARK_COOKIE 格式错误")
+              print("QUARK_COOKIE 格式错误，请检查 Secrets 设置")
               exit(1)
 
           cookie_key, cookie_value = quark_cookie_str.split('=', 1)
@@ -81,7 +82,7 @@ jobs:
                       print("没有新版本")
 
               except Exception as e:
-                  print(f"获取/解析页面失败：{type(e).__name__} - {e}")
+                  print(f"获取/解析页面失败：{type(e).__name__} {str(e)}")
 
           def download_and_upload(href, version_str):
               try:
@@ -91,7 +92,7 @@ jobs:
                   else:
                       full_url = href
 
-                  print(f"下载：{full_url}")
+                  print(f"即将下载：{full_url}")
 
                   r = requests.get(full_url, cookies=cookies, stream=True, timeout=60)
                   r.raise_for_status()
@@ -101,9 +102,10 @@ jobs:
 
                   with open(filename, "wb") as f:
                       for chunk in r.iter_content(chunk_size=8192):
-                          f.write(chunk)
+                          if chunk:
+                              f.write(chunk)
 
-                  print(f"下载完成：{filename}")
+                  print(f"下载完成：{filename} ({os.path.getsize(filename)} bytes)")
 
                   g = Github(os.getenv("GITHUB_TOKEN"))
                   repo = g.get_repo(os.getenv("GITHUB_REPOSITORY"))
@@ -120,6 +122,7 @@ jobs:
                               draft=False,
                               prerelease=False
                           )
+                          print(f"创建了新 Release：{version_str}")
                       else:
                           raise
 
@@ -127,12 +130,12 @@ jobs:
                       filename,
                       name=filename,
                       content_type="application/vnd.android.package-archive",
-                      label=f"APK v{version_str}"
+                      label=f"APK - {version_str}"
                   )
-                  print("上传成功")
+                  print("Asset 上传成功")
 
               except Exception as e:
-                  print(f"下载/上传失败：{type(e).__name__} - {e}")
+                  print(f"下载或上传失败：{type(e).__name__} {str(e)}")
 
           if __name__ == "__main__":
               get_latest_apk()
