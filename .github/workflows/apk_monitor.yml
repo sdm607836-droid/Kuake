@@ -2,14 +2,14 @@ name: Monitor and Upload APK
 
 on:
   schedule:
-    - cron: '0 * * * *'   # 每小时运行一次
+    - cron: '0 * * * *'
 
 jobs:
   check_apk:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4   # 建议升到 v4
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -24,31 +24,30 @@ jobs:
       - name: Run APK monitor script
         env:
           QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
-          APK_URL:      'https://pan.quark.cn/s/cb0ee2b9ac64'
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}     # 必须有这个才能创建 release
+          APK_URL: 'https://pan.quark.cn/s/cb0ee2b9ac64'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: python
         run: |
-          python - << 'EOF'
           import os
           import requests
           from bs4 import BeautifulSoup
           from github import Github, GithubException
 
-          # ──────────────── 环境变量 ────────────────
           quark_cookie_str = os.getenv("QUARK_COOKIE")
           url = os.getenv("APK_URL")
 
-          if not quark_cookie_str or "=" not in quark_cookie_str:
-              print("错误：QUARK_COOKIE 格式不正确")
+          if not quark_cookie_str or '=' not in quark_cookie_str:
+              print("QUARK_COOKIE 格式错误")
               exit(1)
 
-          cookie_key, cookie_value = quark_cookie_str.split("=", 1)
+          cookie_key, cookie_value = quark_cookie_str.split('=', 1)
           cookies = {cookie_key.strip(): cookie_value.strip()}
 
           last_version_file = ".last_version"
 
           def get_latest_apk():
               try:
-                  resp = requests.get(url, cookies=cookies, timeout=15)
+                  resp = requests.get(url, cookies=cookies, timeout=20)
                   resp.raise_for_status()
                   soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -56,19 +55,19 @@ jobs:
                   for a in soup.find_all("a", href=True):
                       href = a["href"]
                       text = a.get_text(strip=True)
-                      if href.endswith(".apk") or ".apk" in href:
-                          apk_items.append((text, href))
+                      if ".apk" in href.lower():
+                          apk_items.append((text or href, href))
 
                   if not apk_items:
-                      print("未找到任何 .apk 链接")
+                      print("页面中未找到任何 .apk 相关链接")
                       return
 
-                  # 假设文件名里包含版本号，按文件名排序取最新
-                  latest_text, latest_href = sorted(apk_items, key=lambda x: x[0])[-1]
+                  # 按文本排序取“最新”（假设文本含版本号）
+                  latest_text, latest_href = sorted(apk_items)[-1]
 
                   last_version = None
                   if os.path.exists(last_version_file):
-                      with open(last_version_file, encoding="utf-8") as f:
+                      with open(last_version_file, "r", encoding="utf-8") as f:
                           last_version = f.read().strip()
 
                   if latest_text != last_version:
@@ -83,60 +82,59 @@ jobs:
                       print("没有新版本")
 
               except Exception as e:
-                  print(f"获取页面失败：{e}")
+                  print(f"获取/解析页面失败：{type(e).__name__} - {e}")
 
           def download_and_upload(href, version_str):
               try:
-                  # 假设 href 是相对路径
-                  if not href.startswith("http"):
-                      base = os.getenv("APK_URL").rstrip("/") + "/"
-                      full_url = base + href.lstrip("/")
+                  if not href.startswith(('http://', 'https://')):
+                      base = os.getenv("APK_URL").rstrip('/') + '/'
+                      full_url = base + href.lstrip('/')
                   else:
                       full_url = href
 
-                  print(f"下载地址：{full_url}")
+                  print(f"下载：{full_url}")
 
-                  r = requests.get(full_url, cookies=cookies, stream=True, timeout=30)
+                  r = requests.get(full_url, cookies=cookies, stream=True, timeout=60)
                   r.raise_for_status()
 
-                  filename = f"{version_str.replace(' ', '_')}.apk"
+                  safe_version = version_str.replace(' ', '_').replace('/', '-')
+                  filename = f"{safe_version}.apk"
+
                   with open(filename, "wb") as f:
-                      for chunk in r.iter_content(16*1024):
+                      for chunk in r.iter_content(chunk_size=8192):
                           f.write(chunk)
 
                   print(f"下载完成：{filename}")
 
-                  # 上传为 GitHub Release
+                  # GitHub Release 上传
                   g = Github(os.getenv("GITHUB_TOKEN"))
                   repo = g.get_repo(os.getenv("GITHUB_REPOSITORY"))
 
                   try:
                       release = repo.get_release(version_str)
-                      print(f"Release {version_str} 已存在，跳过创建")
-                  except GithubException as e:
-                      if e.status == 404:
+                      print(f"Release {version_str} 已存在")
+                  except GithubException as exc:
+                      if exc.status == 404:
                           release = repo.create_git_release(
                               tag=version_str,
                               name=version_str,
-                              message="Auto uploaded by monitor workflow",
+                              message="自动监控上传的 APK",
                               draft=False,
                               prerelease=False
                           )
                       else:
                           raise
 
-                  # 上传文件作为 asset
                   release.upload_asset(
-                      path=filename,
+                      filename,
                       name=filename,
                       content_type="application/vnd.android.package-archive",
-                      label=f"APK - {version_str}"
+                      label=f"APK v{version_str}"
                   )
-                  print(f"已上传到 Release：{version_str}")
+                  print("上传成功")
 
               except Exception as e:
-                  print(f"下载/上传失败：{e}")
+                  print(f"下载/上传失败：{type(e).__name__} - {e}")
 
           if __name__ == "__main__":
               get_latest_apk()
-          EOF
