@@ -1,27 +1,24 @@
 import os
 import json
 import requests
-from github import Github
+from pathlib import Path
 
 # ===== 配置区 =====
-WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"  # 修改为你的 Worker URL
+WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"  # 你的 Worker URL
 PWD_ID = "cb0ee2b9ac64"
 PAGE_SIZE = 50
-
-# 需要监控的目录
 TARGET_DIRS = [
-    "8d6dce95581c49f29183380d3805e9b5",  # 直接获取里面的4个APK
+    "8d6dce95581c49f29183380d3805e9b5",  # 获取4个APK
     "f0c75c96e96e4310b96383b4b22040e3",  # 获取最新文件夹
 ]
 
-# Secrets
+# ===== Secrets =====
 STOKEN = os.getenv("QUARK_STOKEN")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY")  # 例如 username/repo
-RELEASE_TAG_PREFIX = "auto"
+ROOT_FID = os.getenv("QUARK_ROOT_FID")  # 可选，用于 Worker 验证
 
-if not STOKEN or not GITHUB_TOKEN or not GITHUB_REPOSITORY:
-    raise Exception("❌ 请检查 Secrets 是否已设置: QUARK_STOKEN, GITHUB_TOKEN, GITHUB_REPOSITORY")
+if not STOKEN:
+    print("❌ 请在 GitHub Secrets 设置 QUARK_STOKEN")
+    exit(1)
 
 # ===== Worker 请求函数 =====
 def fetch_page(stoken, pdir_fid, page=1):
@@ -58,6 +55,7 @@ def get_latest_subfolder(stoken, fid):
     folders = [f for f in files if f.get("dir")]
     if not folders:
         return None
+    # 文件夹名字里数字越大表示越新
     def folder_key(f):
         name = f.get("file_name", "")
         digits = "".join(c for c in name if c.isdigit())
@@ -65,51 +63,45 @@ def get_latest_subfolder(stoken, fid):
     latest = max(folders, key=folder_key)
     return latest
 
-# ===== 下载 APK 文件 =====
-def download_apk(apk):
-    url = apk.get("download_url") or apk.get("source_url")  # Worker 需返回真实下载链接
-    if not url:
-        print(f"⚠ 无法获取 {apk['file_name']} 下载 URL，跳过")
-        return None
-    local_path = os.path.join("apk", apk["file_name"])
-    os.makedirs("apk", exist_ok=True)
+# ===== 生成下载 URL =====
+def get_download_url(fid, share_fid_token):
+    url = f"https://pan.quark.cn/1/clouddrive/file/download"
+    params = {
+        "fid": fid,
+        "share_fid_token": share_fid_token,
+        "stoken": STOKEN,
+        "pdir_fid": ROOT_FID,
+    }
     try:
-        r = requests.get(url, stream=True, timeout=120)
+        r = requests.get(url, params=params, timeout=30)
         r.raise_for_status()
-        with open(local_path, "wb") as f:
-            for chunk in r.iter_content(1024 * 1024):
-                f.write(chunk)
-        return local_path
-    except Exception as e:
-        print(f"❌ 下载 {apk['file_name']} 失败: {e}")
+        data = r.json()
+        if data.get("code") == 0 and "data" in data:
+            return data["data"].get("download_url")
+        else:
+            return None
+    except:
         return None
 
-# ===== 上传到 GitHub Release =====
-def upload_to_github_release(files):
-    g = Github(GITHUB_TOKEN)
-    repo = g.get_repo(GITHUB_REPOSITORY)
-    tag_name = f"{RELEASE_TAG_PREFIX}-{os.popen('date +%Y%m%d-%H%M').read().strip()}"
-
-    # 尝试获取已存在 Release
+# ===== 下载 APK =====
+def download_apk(file_info, folder="apk"):
+    url = file_info.get("download_url")
+    if not url:
+        print(f"⚠ 无法获取 {file_info['file_name']} 下载 URL，跳过")
+        return None
+    Path(folder).mkdir(exist_ok=True)
+    local_path = Path(folder) / file_info["file_name"]
     try:
-        release = repo.get_release(tag_name)
-    except:
-        release = repo.create_git_release(
-            tag=tag_name,
-            name=f"FongMi APK {tag_name}",
-            message="自动同步自 Quark APK",
-            draft=False,
-            prerelease=False
-        )
-
-    # 上传 APK
-    for fpath in files:
-        fname = os.path.basename(fpath)
-        try:
-            release.upload_asset(fpath, label=fname)
-            print(f"✅ 上传 {fname} 到 Release")
-        except Exception as e:
-            print(f"⚠ 上传 {fname} 失败: {e}")
+        resp = requests.get(url, stream=True, timeout=120)
+        resp.raise_for_status()
+        with open(local_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print(f"✅ 下载成功: {file_info['file_name']}")
+        return str(local_path)
+    except Exception as e:
+        print(f"❌ 下载失败: {file_info['file_name']} -> {e}")
+        return None
 
 # ===== 主逻辑 =====
 def main():
@@ -119,37 +111,32 @@ def main():
     dir1 = TARGET_DIRS[0]
     apks_dir1 = get_apks_in_dir(STOKEN, dir1)
     print(f"\n📦 目录 {dir1[:8]} APK 文件 {len(apks_dir1)} 个")
-    result_files.extend(apks_dir1)
+    for f in apks_dir1:
+        f["download_url"] = get_download_url(f["fid"], f.get("share_fid_token"))
+        local_path = download_apk(f)
+        if local_path:
+            result_files.append(f)
 
     # 处理 f0c75c96e96e4310b96383b4b22040e3 下最新文件夹
     dir2 = TARGET_DIRS[1]
     latest_folder = get_latest_subfolder(STOKEN, dir2)
     if latest_folder:
         print(f"\n📂 目录 {dir2[:8]} 最新文件夹: {latest_folder['file_name']}")
-        apks_latest = get_apks_in_dir(STOKEN, latest_folder["fid"])
+        fid_latest = latest_folder["fid"]
+        apks_latest = get_apks_in_dir(STOKEN, fid_latest)
         print(f"📦 最新文件夹 APK 文件 {len(apks_latest)} 个")
-        result_files.extend(apks_latest)
+        for f in apks_latest:
+            f["download_url"] = get_download_url(f["fid"], f.get("share_fid_token"))
+            local_path = download_apk(f)
+            if local_path:
+                result_files.append(f)
     else:
         print(f"⚠ 目录 {dir2[:8]} 没有子文件夹")
 
     # 保存 JSON
-    os.makedirs("apk", exist_ok=True)
     with open("latest_apks.json", "w", encoding="utf-8") as f:
         json.dump(result_files, f, ensure_ascii=False, indent=2)
     print("\n💾 已保存最新 APK 文件列表到 latest_apks.json")
-
-    # 下载 APK 文件
-    local_files = []
-    for apk in result_files:
-        path = download_apk(apk)
-        if path:
-            local_files.append(path)
-
-    # 上传到 GitHub Release
-    if local_files:
-        upload_to_github_release(local_files)
-    else:
-        print("⚠ 没有可上传的 APK 文件")
 
 if __name__ == "__main__":
     main()
