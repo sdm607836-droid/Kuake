@@ -13,34 +13,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ──────────── 1. 拉取仓库 ────────────
       - name: Checkout 仓库
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 安装依赖
+      # ──────────── 2. 安装依赖 ────────────
+      - name: 安装 Python 依赖
         run: |
           python -m pip install --upgrade pip
           pip install requests PyGithub
 
-      - name: 下载最新 APK
+      # ──────────── 3. 运行 monitor_worker.py ────────────
+      - name: 运行 monitor_worker.py
         env:
           QUARK_STOKEN: ${{ secrets.QUARK_STOKEN }}
           QUARK_ROOT_FID: ${{ secrets.QUARK_ROOT_FID }}
-        run: |
-          python monitor_worker.py
-
-      - name: 上传到 GitHub Release
-        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          # 这里写你上传 apk/ 文件到 Release 的逻辑
-
-      - name: 推送到 Telegram
-        env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           BOT_API_BASE: ${{ secrets.BOT_API_BASE }}
         run: |
-          # 这里写你用 monitor_worker.py 下载的 apk/ 文件推送的逻辑
+          echo "▶ DEBUG: 打印环境变量"
+          echo "QUARK_STOKEN: $QUARK_STOKEN"
+          echo "QUARK_ROOT_FID: $QUARK_ROOT_FID"
+          echo "GITHUB_TOKEN: $GITHUB_TOKEN"
+          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+          echo "BOT_TOKEN: $BOT_TOKEN"
+          echo "CHAT_ID: $CHAT_ID"
+          echo "BOT_API_BASE: $BOT_API_BASE"
+
+          echo "▶ 运行 monitor_worker.py ..."
+          python monitor_worker.py
