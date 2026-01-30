@@ -3,11 +3,9 @@ import json
 import requests
 
 # ========== 配置 ==========
-# Worker URL
-WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
-
-# 分享页参数（从浏览器抓取）
+WORKER_URL = "https://你的worker子域名.workers.dev"  # 改成你部署的 Worker URL
 PWD_ID = "cb0ee2b9ac64"
+
 STOKEN = os.getenv("QUARK_STOKEN")
 ROOT_FID = os.getenv("QUARK_ROOT_FID")
 
@@ -17,8 +15,19 @@ if not STOKEN or not ROOT_FID:
 
 # ========== 调用 Worker ==========
 try:
-    resp = requests.get(
-        f"{WORKER_URL}?pwd_id={PWD_ID}&stoken={STOKEN}&pdir_fid={ROOT_FID}",
+    resp = requests.post(
+        WORKER_URL,
+        json={
+            "pwd_id": PWD_ID,
+            "stoken": STOKEN,
+            "pdir_fid": ROOT_FID,
+            "_page": 1,
+            "_size": 100,
+            "_fetch_total": 1,
+            "ver": 2,
+            "pr": "ucpro",
+            "fr": "h5",
+        },
         timeout=15
     )
     resp.raise_for_status()
