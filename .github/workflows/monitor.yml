@@ -24,7 +24,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install requests PyGithub packaging
 
       - name: Run monitor_worker.py
         env:
