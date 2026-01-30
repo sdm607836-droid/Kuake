@@ -37,12 +37,12 @@ except Exception as e:
     exit(1)
 
 # ========== 检查返回数据 ==========
-if "data" not in data or "list" not in data["data"]:
+if "data" not in data or "detail_info" not in data["data"] or "list" not in data["data"]["detail_info"]:
     print("❌ 获取文件列表失败")
     print(json.dumps(data, ensure_ascii=False, indent=2))
     exit(1)
 
-files = data["data"]["list"]
+files = data["data"]["detail_info"]["list"]
 
 # ========== 输出文件列表 ==========
 print(f"\n📦 共 {len(files)} 个文件：\n")
