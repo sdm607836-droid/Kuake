@@ -1,99 +1,83 @@
 import os
 import json
 import requests
-from github import Github
 
 # ===== 配置 =====
-WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"  # 你的 Worker
-PWD_ID = os.getenv("QUARK_PWD_ID")  # GitHub Secret
-TARGET_DIRS = [
-    "8d6dce95581c49f29183380d3805e9b5",
-    "f0c75c96e96e4310b96383b4b22040e3"
-]
-STOKEN = os.getenv("QUARK_STOKEN")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")  # e.g. username/repo
+WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
+PWD_ID = "cb0ee2b9ac64"
+PAGE_SIZE = 50
 
-if not all([STOKEN, GITHUB_TOKEN, GITHUB_REPO]):
-    raise Exception("❌ 请检查 Secrets 是否完整：QUARK_STOKEN, GITHUB_TOKEN, GITHUB_REPOSITORY")
+TARGET_DIRS = [
+    "8d6dce95581c49f29183380d3805e9b5",  # 直接取里面的 APK
+    "f0c75c96e96e4310b96383b4b22040e3",  # 获取最新文件夹
+]
+
+# ===== Secrets =====
+STOKEN = os.getenv("QUARK_STOKEN")
+ROOT_FID = os.getenv("QUARK_ROOT_FID")  # 可选，Worker 验证
+
+if not STOKEN:
+    raise Exception("❌ 请在 GitHub Secrets 设置 QUARK_STOKEN")
 
 # ===== Worker 请求函数 =====
-def fetch_worker(fid):
-    resp = requests.post(WORKER_URL, json={
-        "pwd_id": PWD_ID,
-        "stoken": STOKEN,
-        "pdir_fid": fid,
-        "_page": 1,
-        "_size": 50
-    }, timeout=60)
-    resp.raise_for_status()
-    return resp.json().get("files", [])
+def fetch_page(stoken, pdir_fid, page=1):
+    try:
+        resp = requests.post(
+            WORKER_URL,
+            json={
+                "pwd_id": PWD_ID,
+                "stoken": stoken,
+                "pdir_fid": pdir_fid,
+                "page": page,   # ⚠ 注意这里
+                "size": PAGE_SIZE
+            },
+            timeout=60
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("data", {}).get("detail_info", {}).get("list", [])
+    except Exception as e:
+        print(f"❌ 请求目录 {pdir_fid[:8]} 失败: {e}")
+        return []
 
-# ===== 获取最新文件夹 =====
-def get_latest_subfolder(fid):
-    files = fetch_worker(fid)
-    folders = [f for f in files if f["dir"]]
+# ===== 获取目录 APK =====
+def get_apks_in_dir(stoken, fid):
+    files = fetch_page(stoken, fid)
+    return [f for f in files if not f.get("dir") and f.get("file_type") == 1]
+
+# ===== 获取最新子文件夹 =====
+def get_latest_subfolder(stoken, fid):
+    files = fetch_page(stoken, fid)
+    folders = [f for f in files if f.get("dir")]
     if not folders:
         return None
-    def key(f):
-        digits = "".join(c for c in f["file_name"] if c.isdigit())
+    def folder_key(f):
+        name = f.get("file_name", "")
+        digits = "".join(c for c in name if c.isdigit())
         return int(digits) if digits else 0
-    return max(folders, key=key)
-
-# ===== 下载文件 =====
-def download_file(url, save_path):
-    r = requests.get(url, stream=True, timeout=120)
-    r.raise_for_status()
-    with open(save_path, "wb") as f:
-        for chunk in r.iter_content(1024*1024):
-            f.write(chunk)
-
-# ===== 上传到 GitHub Release =====
-def upload_to_github(apk_files):
-    g = Github(GITHUB_TOKEN)
-    repo = g.get_repo(GITHUB_REPO)
-    tag = f"auto-{os.popen('date +%Y%m%d-%H%M').read().strip()}"
-    release = repo.create_git_release(tag=tag, name=f"FongMi APK {tag}", message="自动同步 Quark APK")
-    
-    for apk in apk_files:
-        release.upload_asset(apk)
-        print(f"✅ 上传完成: {apk}")
+    return max(folders, key=folder_key)
 
 # ===== 主逻辑 =====
 def main():
-    apk_files = []
+    result_files = []
 
     # 处理第一个目录
-    files1 = fetch_worker(TARGET_DIRS[0])
-    for f in files1:
-        if f["file_type"] == 1:
-            save_path = f"apk_{f['file_name']}"
-            print(f"📥 下载 {f['file_name']}")
-            try:
-                download_file(f["download_url"], save_path)
-                apk_files.append(save_path)
-            except Exception as e:
-                print(f"⚠ 下载失败 {f['file_name']}: {e}")
+    apks1 = get_apks_in_dir(STOKEN, TARGET_DIRS[0])
+    print(f"📦 目录 {TARGET_DIRS[0][:8]} APK 数: {len(apks1)}")
+    result_files.extend(apks1)
 
-    # 第二个目录最新子文件夹
-    latest = get_latest_subfolder(TARGET_DIRS[1])
-    if latest:
-        files2 = fetch_worker(latest["fid"])
-        for f in files2:
-            if f["file_type"] == 1:
-                save_path = f"apk_{f['file_name']}"
-                print(f"📥 下载 {f['file_name']}")
-                try:
-                    download_file(f["download_url"], save_path)
-                    apk_files.append(save_path)
-                except Exception as e:
-                    print(f"⚠ 下载失败 {f['file_name']}: {e}")
+    # 处理第二个目录最新子文件夹
+    latest_folder = get_latest_subfolder(STOKEN, TARGET_DIRS[1])
+    if latest_folder:
+        fid_latest = latest_folder["fid"]
+        apks2 = get_apks_in_dir(STOKEN, fid_latest)
+        print(f"📦 最新文件夹 {latest_folder['file_name']} APK 数: {len(apks2)}")
+        result_files.extend(apks2)
 
-    if apk_files:
-        print(f"📦 共下载 {len(apk_files)} 个 APK，准备上传 GitHub Release")
-        upload_to_github(apk_files)
-    else:
-        print("⚠ 没有 APK 文件可上传")
+    # 保存 JSON
+    with open("latest_apks.json", "w", encoding="utf-8") as f:
+        json.dump(result_files, f, ensure_ascii=False, indent=2)
+    print(f"💾 已保存最新 APK 文件列表到 latest_apks.json")
 
 if __name__ == "__main__":
     main()
