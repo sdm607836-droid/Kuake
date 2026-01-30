@@ -23,52 +23,52 @@ print(f"▶ PWD_ID: {PWD_ID}")
 print(f"▶ STOKEN: {STOKEN[:8]}... (隐藏部分)")
 print(f"▶ ROOT_FID: {ROOT_FID[:8]}... (隐藏部分)")
 
-# ===== 分页请求 Worker 获取文件 =====
-def fetch_page(page):
-    print(f"📡 请求第 {page} 页文件列表...")
+# ===== Worker 请求函数 =====
+def fetch_page_from_worker(stoken, pdir_fid, page):
     try:
         resp = requests.post(
             WORKER_URL,
             json={
                 "pwd_id": PWD_ID,
-                "stoken": STOKEN,
-                "pdir_fid": ROOT_FID,
+                "stoken": stoken,
+                "pdir_fid": pdir_fid,
                 "_page": page,
                 "_size": PAGE_SIZE,
                 "ver": 2,
                 "pr": "ucpro",
                 "fr": "h5",
             },
-            timeout=60  # 延长超时
+            timeout=60
         )
         resp.raise_for_status()
         data = resp.json()
         files = data.get("data", {}).get("detail_info", {}).get("list", [])
-        print(f"✅ 第 {page} 页请求成功，文件数: {len(files)}")
+        print(f"📡 请求目录 {pdir_fid[:8]} 第 {page} 页成功，条目数: {len(files)}")
         return data
     except Exception as e:
         print(f"❌ Worker 请求失败: {e}")
         return None
 
-def get_all_files():
+# ===== 递归获取所有 APK 文件 =====
+def get_files_recursively(stoken, pdir_fid):
     all_files = []
     page = 1
     while True:
-        data = fetch_page(page)
+        data = fetch_page_from_worker(stoken, pdir_fid, page)
         if not data:
-            print("❌ 获取文件列表失败")
             break
-
         files = data.get("data", {}).get("detail_info", {}).get("list", [])
-        all_files.extend(files)
-
-        # 判断是否有更多页
+        for f in files:
+            if f.get("dir", False):
+                # 递归进入子目录
+                all_files.extend(get_files_recursively(stoken, f["fid"]))
+            elif f.get("file_type") == 1 or f.get("format_type") == "application/vnd.android.package-archive":
+                all_files.append(f)
+        # 判断是否还有下一页
         meta = data.get("metadata", {}).get("detail_meta", {})
-        total_count = meta.get("_total", len(files))
-        if page * PAGE_SIZE >= total_count:
+        if page * PAGE_SIZE >= meta.get("_total", len(files)):
             break
         page += 1
-
     return all_files
 
 # ===== 检测最新版本 =====
@@ -97,20 +97,20 @@ def detect_new_version(files):
 
 # ===== 主逻辑 =====
 def main():
-    print("\n🔍 开始获取文件列表...")
-    files = get_all_files()
+    print("\n🔍 开始获取所有 APK 文件...")
+    files = get_files_recursively(STOKEN, ROOT_FID)
     if not files:
-        print("❌ 没有获取到文件")
+        print("❌ 没有获取到 APK 文件")
         exit(1)
 
-    print(f"\n📦 获取到总文件数: {len(files)}\n")
+    print(f"\n📦 获取到总 APK 文件数: {len(files)}\n")
     for f in files:
         print(f"- {f.get('file_name')} | {f.get('size',0)} bytes")
 
     # 保存 JSON
-    with open("files.json", "w", encoding="utf-8") as f:
+    with open("apk_files.json", "w", encoding="utf-8") as f:
         json.dump(files, f, ensure_ascii=False, indent=2)
-    print("\n💾 文件列表已保存到 files.json")
+    print("\n💾 APK 文件列表已保存到 apk_files.json")
 
     # 检查版本变化
     latest_version = detect_new_version(files)
