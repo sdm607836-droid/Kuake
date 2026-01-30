@@ -1,13 +1,6 @@
-name: Sync Quark APK → GitHub Release → Telegram
-
-on:
-  workflow_dispatch:          # 手动触发
-  schedule:
-    - cron: "0 */6 * * *"    # 每6小时自动触发
-
-permissions:
-  contents: write
-
+name: Sync Quark APK → GitHub Release → Telegram 
+on: workflow_dispatch: # 手动触发 
+schedule: - cron: "0 */6 * * *" # 每6小时自动触发 permissions: contents: write
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -23,14 +16,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests PyGithub
 
-      - name: 运行 monitor_worker.py
+      # ───────────── 下载最新 APK ─────────────
+      - name: 下载最新 APK
         env:
           QUARK_STOKEN: ${{ secrets.QUARK_STOKEN }}
           QUARK_ROOT_FID: ${{ secrets.QUARK_ROOT_FID }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-          BOT_API_BASE: ${{ secrets.BOT_API_BASE }}
         run: |
           python monitor_worker.py
+
+      # ───────────── 生成 Release 上传 APK ─────────────
+      - name: 收集 APK 并上传到 GitHub Release
+        run: |
+          # apk/ 下已经有 monitor_worker.py 下载好的文件
+          echo "这里写你上传 Release 的逻辑"
+
+      # ───────────── 推送 Telegram ─────────────
+      - name: 推送到 Telegram
+        run: |
+          # 这里使用 apk/ 文件和上一步生成的 caption 上传
