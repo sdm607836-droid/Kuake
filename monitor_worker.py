@@ -1,178 +1,155 @@
 import os
 import json
 import requests
-import hashlib
-from datetime import datetime
 from github import Github
 
-# ====== 配置 ======
-WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
+# ===== 配置区 =====
+WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"  # 修改为你的 Worker URL
 PWD_ID = "cb0ee2b9ac64"
+PAGE_SIZE = 50
 
+# 需要监控的目录
+TARGET_DIRS = [
+    "8d6dce95581c49f29183380d3805e9b5",  # 直接获取里面的4个APK
+    "f0c75c96e96e4310b96383b4b22040e3",  # 获取最新文件夹
+]
+
+# Secrets
 STOKEN = os.getenv("QUARK_STOKEN")
-ROOT_FID = os.getenv("QUARK_ROOT_FID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-BOT_API_BASE = os.getenv("BOT_API_BASE", "https://api.telegram.org")
-REPO_NAME = os.getenv("GITHUB_REPOSITORY")  # "username/repo"
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY")  # 例如 username/repo
+RELEASE_TAG_PREFIX = "auto"
 
-APK_DIR = "apk"
-HASH_FILE = ".last_apk_hash"
+if not STOKEN or not GITHUB_TOKEN or not GITHUB_REPOSITORY:
+    raise Exception("❌ 请检查 Secrets 是否已设置: QUARK_STOKEN, GITHUB_TOKEN, GITHUB_REPOSITORY")
 
-if not all([STOKEN, ROOT_FID, GITHUB_TOKEN, BOT_TOKEN, CHAT_ID, REPO_NAME]):
-    raise Exception("❌ 请检查所有 Secrets 是否已设置: QUARK_STOKEN, QUARK_ROOT_FID, GITHUB_TOKEN, BOT_TOKEN, CHAT_ID, GITHUB_REPOSITORY")
-
-# ====== SHA256 hash 计算 ======
-def compute_hash(file_paths):
-    sha = hashlib.sha256()
-    for path in sorted(file_paths):
-        with open(path, "rb") as f:
-            while chunk := f.read(8192):
-                sha.update(chunk)
-    return sha.hexdigest()
-
-def load_last_hash():
-    if os.path.exists(HASH_FILE):
-        with open(HASH_FILE, "r") as f:
-            return f.read().strip()
-    return None
-
-def save_last_hash(hash_str):
-    with open(HASH_FILE, "w") as f:
-        f.write(hash_str)
-
-# ====== 获取指定文件夹内容 ======
-def get_files(pdir_fid):
-    files = []
-    page = 1
-    while True:
-        resp = requests.get(
+# ===== Worker 请求函数 =====
+def fetch_page(stoken, pdir_fid, page=1):
+    try:
+        resp = requests.post(
             WORKER_URL,
-            params={
+            json={
                 "pwd_id": PWD_ID,
-                "stoken": STOKEN,
+                "stoken": stoken,
                 "pdir_fid": pdir_fid,
                 "_page": page,
-                "_size": 50
+                "_size": PAGE_SIZE,
+                "ver": 2,
+                "pr": "ucpro",
+                "fr": "h5",
             },
-            timeout=30
+            timeout=60
         )
         resp.raise_for_status()
-        data = resp.json().get("data", {}).get("list", [])
-        if not data:
-            break
-        files.extend(data)
-        if len(data) < 50:
-            break
-        page += 1
-    return files
+        return resp.json().get("data", {}).get("detail_info", {}).get("list", [])
+    except Exception as e:
+        print(f"❌ 请求目录 {pdir_fid[:8]} 失败: {e}")
+        return []
 
-# ====== 获取最新文件夹 ======
-def get_latest_folder(folders):
-    numeric_folders = [f for f in folders if f.get("dir", False)]
-    if not numeric_folders:
+# ===== 获取目录下 APK =====
+def get_apks_in_dir(stoken, fid):
+    files = fetch_page(stoken, fid)
+    apks = [f for f in files if not f.get("dir") and f.get("file_type") == 1]
+    return apks
+
+# ===== 获取目录下最新文件夹 =====
+def get_latest_subfolder(stoken, fid):
+    files = fetch_page(stoken, fid)
+    folders = [f for f in files if f.get("dir")]
+    if not folders:
         return None
-    latest = max(numeric_folders, key=lambda x: x.get("file_name", "0"))
+    def folder_key(f):
+        name = f.get("file_name", "")
+        digits = "".join(c for c in name if c.isdigit())
+        return int(digits) if digits else 0
+    latest = max(folders, key=folder_key)
     return latest
 
-# ====== 下载文件到本地 ======
-def download_file(file_info, target_dir=APK_DIR):
-    os.makedirs(target_dir, exist_ok=True)
-    download_url = f"{WORKER_URL}?pwd_id={PWD_ID}&stoken={STOKEN}&pdir_fid={file_info['fid']}"
-    file_path = os.path.join(target_dir, file_info["file_name"])
-    resp = requests.get(download_url, timeout=30)
-    resp.raise_for_status()
-    with open(file_path, "wb") as f:
-        f.write(resp.content)
-    print(f"✅ 下载完成: {file_info['file_name']}")
-    return file_path
+# ===== 下载 APK 文件 =====
+def download_apk(apk):
+    url = apk.get("download_url") or apk.get("source_url")  # Worker 需返回真实下载链接
+    if not url:
+        print(f"⚠ 无法获取 {apk['file_name']} 下载 URL，跳过")
+        return None
+    local_path = os.path.join("apk", apk["file_name"])
+    os.makedirs("apk", exist_ok=True)
+    try:
+        r = requests.get(url, stream=True, timeout=120)
+        r.raise_for_status()
+        with open(local_path, "wb") as f:
+            for chunk in r.iter_content(1024 * 1024):
+                f.write(chunk)
+        return local_path
+    except Exception as e:
+        print(f"❌ 下载 {apk['file_name']} 失败: {e}")
+        return None
 
-# ====== 上传 GitHub Release ======
-def upload_release(apk_files):
+# ===== 上传到 GitHub Release =====
+def upload_to_github_release(files):
     g = Github(GITHUB_TOKEN)
-    repo = g.get_repo(REPO_NAME)
-    tag_name = f"auto-{datetime.now().strftime('%Y%m%d-%H%M')}"
+    repo = g.get_repo(GITHUB_REPOSITORY)
+    tag_name = f"{RELEASE_TAG_PREFIX}-{os.popen('date +%Y%m%d-%H%M').read().strip()}"
 
-    release = repo.create_git_release(
-        tag=tag_name,
-        name=f"FongMi APK {tag_name}",
-        message=f"自动同步自：https://github.com/FongMi/Release/tree/fongmi/apk\n仅当 APK 内容变化时发布。",
-        draft=False,
-        prerelease=False
-    )
+    # 尝试获取已存在 Release
+    try:
+        release = repo.get_release(tag_name)
+    except:
+        release = repo.create_git_release(
+            tag=tag_name,
+            name=f"FongMi APK {tag_name}",
+            message="自动同步自 Quark APK",
+            draft=False,
+            prerelease=False
+        )
 
-    for apk in apk_files:
-        release.upload_asset(apk)
-        print(f"⚡ 上传到 Release: {apk}")
+    # 上传 APK
+    for fpath in files:
+        fname = os.path.basename(fpath)
+        try:
+            release.upload_asset(fpath, label=fname)
+            print(f"✅ 上传 {fname} 到 Release")
+        except Exception as e:
+            print(f"⚠ 上传 {fname} 失败: {e}")
 
-# ====== 推送 Telegram ======
-def push_telegram(apk_files, caption):
-    media = []
-    for i, apk in enumerate(apk_files):
-        m = {"type": "document", "media": f"attach://{os.path.basename(apk)}"}
-        if i == len(apk_files) - 1:
-            m["caption"] = caption
-        media.append(m)
-    media_json = json.dumps(media)
-
-    files = {os.path.basename(apk): open(apk, "rb") for apk in apk_files}
-    resp = requests.post(
-        f"{BOT_API_BASE}/bot{BOT_TOKEN}/sendMediaGroup",
-        data={"chat_id": CHAT_ID, "media": media_json},
-        files=files
-    )
-    for f in files.values():
-        f.close()
-
-    resp_json = resp.json()
-    if resp_json.get("ok"):
-        print("✅ Telegram 推送成功")
-    else:
-        print("❌ Telegram 推送失败:", resp.text)
-
-# ====== 主逻辑 ======
+# ===== 主逻辑 =====
 def main():
-    print("🔍 获取根目录文件夹列表...")
-    all_files = get_files(ROOT_FID)
+    result_files = []
 
-    # 最新文件夹
-    f0_folder = next((f for f in all_files if f["fid"]=="f0c75c96e96e4310b96383b4b22040e3"), None)
-    f0_files = get_files(f0_folder["fid"]) if f0_folder else []
-    latest_f0_file = get_latest_folder(f0_files)
+    # 处理 8d6dce95581c49f29183380d3805e9b5 下的 APK
+    dir1 = TARGET_DIRS[0]
+    apks_dir1 = get_apks_in_dir(STOKEN, dir1)
+    print(f"\n📦 目录 {dir1[:8]} APK 文件 {len(apks_dir1)} 个")
+    result_files.extend(apks_dir1)
 
-    # 四个 APK
-    f8_folder = next((f for f in all_files if f["fid"]=="8d6dce95581c49f29183380d3805e9b5"), None)
-    f8_files = get_files(f8_folder["fid"]) if f8_folder else []
+    # 处理 f0c75c96e96e4310b96383b4b22040e3 下最新文件夹
+    dir2 = TARGET_DIRS[1]
+    latest_folder = get_latest_subfolder(STOKEN, dir2)
+    if latest_folder:
+        print(f"\n📂 目录 {dir2[:8]} 最新文件夹: {latest_folder['file_name']}")
+        apks_latest = get_apks_in_dir(STOKEN, latest_folder["fid"])
+        print(f"📦 最新文件夹 APK 文件 {len(apks_latest)} 个")
+        result_files.extend(apks_latest)
+    else:
+        print(f"⚠ 目录 {dir2[:8]} 没有子文件夹")
 
-    print(f"📦 最新文件夹数量: {1 if latest_f0_file else 0}")
-    print(f"📦 四个 APK 数量: {len(f8_files)}")
+    # 保存 JSON
+    os.makedirs("apk", exist_ok=True)
+    with open("latest_apks.json", "w", encoding="utf-8") as f:
+        json.dump(result_files, f, ensure_ascii=False, indent=2)
+    print("\n💾 已保存最新 APK 文件列表到 latest_apks.json")
 
-    # 下载到本地
-    apk_files = []
-    if latest_f0_file:
-        apk_files.append(download_file(latest_f0_file))
-    for apk in f8_files:
-        apk_files.append(download_file(apk))
+    # 下载 APK 文件
+    local_files = []
+    for apk in result_files:
+        path = download_apk(apk)
+        if path:
+            local_files.append(path)
 
-    # ====== 检测变更 ======
-    new_hash = compute_hash(apk_files)
-    last_hash = load_last_hash()
-    if new_hash == last_hash:
-        print("ℹ️ APK 内容未变化 → 跳过 Release 和 Telegram 推送")
-        return
-    save_last_hash(new_hash)
-    print("🔔 APK 内容有变化 → 执行 Release 和 Telegram 推送")
-
-    # 创建 GitHub Release 并上传
-    upload_release(apk_files)
-
-    # 构造 Telegram caption
-    update_time = datetime.now().strftime('%Y/%m/%d %H:%M')
-    caption = f"FongMi APK 更新 - 时间: {update_time}\n共 {len(apk_files)} 个文件"
-
-    # 推送到 Telegram
-    push_telegram(apk_files, caption)
+    # 上传到 GitHub Release
+    if local_files:
+        upload_to_github_release(local_files)
+    else:
+        print("⚠ 没有可上传的 APK 文件")
 
 if __name__ == "__main__":
     main()
