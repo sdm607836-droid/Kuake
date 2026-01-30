@@ -1,28 +1,38 @@
-name: Monitor Quark Share via Worker
+name: Monitor & Sync Quark APKs
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'  # 每6小时运行一次
+    - cron: "0 */6 * * *"  # 每6小时自动运行一次
+
+permissions:
+  contents: write
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests packaging
+        run: pip install requests PyGithub
 
-      - name: Run monitor script
-        run: python monitor_worker.py
+      - name: Run monitor_worker.py
         env:
           QUARK_STOKEN: ${{ secrets.QUARK_STOKEN }}
           QUARK_ROOT_FID: ${{ secrets.QUARK_ROOT_FID }}
+          GITHUB_TOKEN:   ${{ secrets.GITHUB_TOKEN }}
+          BOT_TOKEN:      ${{ secrets.BOT_TOKEN }}
+          CHAT_ID:        ${{ secrets.CHAT_ID }}
+          BOT_API_BASE:   ${{ secrets.BOT_API_BASE }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          echo "▶ Running monitor_worker.py ..."
+          python monitor_worker.py
