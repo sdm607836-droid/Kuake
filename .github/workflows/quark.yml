@@ -1,0 +1,120 @@
+name: Monitor Quark Share
+
+on:
+  workflow_dispatch:   # 手动触发
+  # schedule:
+  #   - cron: '0 */6 * * *'   # 稳定后再打开
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install requests packaging
+
+      - name: Run monitor
+        env:
+          QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
+        shell: python
+        run: |
+          import os
+          import sys
+          import time
+          import requests
+          from packaging import version as ver_parser
+
+          SHARE_ID = "cb0ee2b9ac64"
+          PASSCODE = ""
+          PAGE_SIZE = 50
+          LAST_VERSION = ".last_version"
+
+          COOKIE = os.getenv("QUARK_COOKIE")
+          if not COOKIE:
+              print("❌ QUARK_COOKIE 未设置")
+              sys.exit(1)
+
+          HEADERS = {
+              "Cookie": COOKIE,
+              "Referer": f"https://pan.quark.cn/s/{SHARE_ID}",
+              "User-Agent": "Mozilla/5.0"
+          }
+
+          def get_stoken():
+              r = requests.post(
+                  "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token",
+                  headers=HEADERS,
+                  json={"pwd_id": SHARE_ID, "passcode": PASSCODE},
+                  timeout=15
+              )
+              r.raise_for_status()
+              return r.json().get("stoken")
+
+          def list_files(stoken, pdir="0"):
+              res = []
+              page = 1
+              while True:
+                  r = requests.get(
+                      "https://pan.quark.cn/1/clouddrive/share/sharepage/detail",
+                      headers=HEADERS,
+                      params={
+                          "pwd_id": SHARE_ID,
+                          "stoken": stoken,
+                          "pdir_fid": pdir,
+                          "_page": page,
+                          "_size": PAGE_SIZE,
+                          "_fetch_total": 1,
+                          "ver": 2
+                      },
+                      timeout=15
+                  )
+                  r.raise_for_status()
+                  data = r.json()
+                  files = data.get("list", [])
+                  if not files:
+                      break
+                  for f in files:
+                      res.append(f)
+                      if f.get("is_dir"):
+                          res.extend(list_files(stoken, f["fid"]))
+                  if len(files) < PAGE_SIZE:
+                      break
+                  page += 1
+                  time.sleep(0.3)
+              return res
+
+          stoken = get_stoken()
+          files = list_files(stoken)
+
+          versions = []
+          for f in files:
+              name = f.get("file_name", "")
+              for part in name.replace("-", " ").replace("_", " ").split():
+                  if part.count(".") == 2 and all(x.isdigit() for x in part.split(".")):
+                      versions.append(part)
+
+          if not versions:
+              print("❌ 未发现版本号")
+              sys.exit(0)
+
+          latest = max(versions, key=lambda v: ver_parser.parse(v))
+          print("🔍 当前最新版本:", latest)
+
+          old = None
+          if os.path.exists(LAST_VERSION):
+              old = open(LAST_VERSION).read().strip()
+
+          if latest != old:
+              print("🚀 发现新版本:", latest)
+              open(LAST_VERSION, "w").write(latest)
+          else:
+              print("✅ 没有更新")
