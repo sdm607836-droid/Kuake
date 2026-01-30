@@ -1,30 +1,28 @@
 import os
 import json
 import requests
-from packaging import version as ver_parser
 
 # ===== 配置区 =====
 WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"  # 修改为你的 Worker URL
 PWD_ID = "cb0ee2b9ac64"
 PAGE_SIZE = 50
-LAST_VERSION_FILE = ".last_version"
 
-# ===== 获取 Secrets =====
+# ===== 需要监控的目录 =====
+TARGET_DIRS = [
+    "8d6dce95581c49f29183380d3805e9b5",  # 直接获取里面的4个APK
+    "f0c75c96e96e4310b96383b4b22040e3",  # 获取最新文件夹
+]
+
+# ===== Secrets =====
 STOKEN = os.getenv("QUARK_STOKEN")
-ROOT_FID = os.getenv("QUARK_ROOT_FID")
+ROOT_FID = os.getenv("QUARK_ROOT_FID")  # 可选，主要用于Worker验证
 
-if not STOKEN or not ROOT_FID:
-    print("❌ 请在 GitHub Secrets 设置 QUARK_STOKEN 和 QUARK_ROOT_FID")
+if not STOKEN:
+    print("❌ 请在 GitHub Secrets 设置 QUARK_STOKEN")
     exit(1)
 
-# ===== 日志打印环境信息 =====
-print(f"▶ Worker URL: {WORKER_URL}")
-print(f"▶ PWD_ID: {PWD_ID}")
-print(f"▶ STOKEN: {STOKEN[:8]}... (隐藏部分)")
-print(f"▶ ROOT_FID: {ROOT_FID[:8]}... (隐藏部分)")
-
 # ===== Worker 请求函数 =====
-def fetch_page_from_worker(stoken, pdir_fid, page):
+def fetch_page(stoken, pdir_fid, page=1):
     try:
         resp = requests.post(
             WORKER_URL,
@@ -41,90 +39,61 @@ def fetch_page_from_worker(stoken, pdir_fid, page):
             timeout=60
         )
         resp.raise_for_status()
-        data = resp.json()
-        files = data.get("data", {}).get("detail_info", {}).get("list", [])
-        print(f"📡 请求目录 {pdir_fid[:8]} 第 {page} 页成功，条目数: {len(files)}")
-        return data
+        return resp.json().get("data", {}).get("detail_info", {}).get("list", [])
     except Exception as e:
-        print(f"❌ Worker 请求失败: {e}")
+        print(f"❌ 请求目录 {pdir_fid[:8]} 失败: {e}")
+        return []
+
+# ===== 获取目录下 APK =====
+def get_apks_in_dir(stoken, fid):
+    files = fetch_page(stoken, fid)
+    apks = [f for f in files if not f.get("dir") and f.get("file_type") == 1]
+    return apks
+
+# ===== 获取目录下最新文件夹 =====
+def get_latest_subfolder(stoken, fid):
+    files = fetch_page(stoken, fid)
+    folders = [f for f in files if f.get("dir")]
+    if not folders:
         return None
-
-# ===== 递归获取所有 APK 文件 =====
-def get_files_recursively(stoken, pdir_fid):
-    all_files = []
-    page = 1
-    while True:
-        data = fetch_page_from_worker(stoken, pdir_fid, page)
-        if not data:
-            break
-        files = data.get("data", {}).get("detail_info", {}).get("list", [])
-        for f in files:
-            if f.get("dir", False):
-                # 递归进入子目录
-                all_files.extend(get_files_recursively(stoken, f["fid"]))
-            elif f.get("file_type") == 1 or f.get("format_type") == "application/vnd.android.package-archive":
-                all_files.append(f)
-        # 判断是否还有下一页
-        meta = data.get("metadata", {}).get("detail_meta", {})
-        if page * PAGE_SIZE >= meta.get("_total", len(files)):
-            break
-        page += 1
-    return all_files
-
-# ===== 检测最新版本 =====
-def detect_new_version(files):
-    version_candidates = []
-    for f in files:
+    # 文件夹名字里数字越大表示越新
+    def folder_key(f):
         name = f.get("file_name", "")
-        # x.y.z 格式
-        if name.count('.') == 2 and all(p.isdigit() for p in name.split('.') if p.isdigit() or p.isalpha()):
-            version_candidates.append(name)
-        # 纯数字长串（日期）
-        elif name.isdigit() and len(name) >= 6:
-            version_candidates.append(name)
-
-    if not version_candidates:
-        return None
-
-    def safe_parse(v):
-        try:
-            return ver_parser.parse(v)
-        except:
-            return ver_parser.parse("0.0.0")
-
-    latest_version = max(version_candidates, key=safe_parse)
-    return latest_version
+        digits = "".join(c for c in name if c.isdigit())
+        return int(digits) if digits else 0
+    latest = max(folders, key=folder_key)
+    return latest
 
 # ===== 主逻辑 =====
 def main():
-    print("\n🔍 开始获取所有 APK 文件...")
-    files = get_files_recursively(STOKEN, ROOT_FID)
-    if not files:
-        print("❌ 没有获取到 APK 文件")
-        exit(1)
+    result_files = []
 
-    print(f"\n📦 获取到总 APK 文件数: {len(files)}\n")
-    for f in files:
-        print(f"- {f.get('file_name')} | {f.get('size',0)} bytes")
+    # 处理 8d6dce95581c49f29183380d3805e9b5 下的 APK
+    dir1 = TARGET_DIRS[0]
+    apks_dir1 = get_apks_in_dir(STOKEN, dir1)
+    print(f"\n📦 目录 {dir1[:8]} APK 文件 {len(apks_dir1)} 个")
+    for f in apks_dir1:
+        print(f"- {f['file_name']} | {f['size']} bytes")
+        result_files.append(f)
+
+    # 处理 f0c75c96e96e4310b96383b4b22040e3 下最新文件夹
+    dir2 = TARGET_DIRS[1]
+    latest_folder = get_latest_subfolder(STOKEN, dir2)
+    if latest_folder:
+        print(f"\n📂 目录 {dir2[:8]} 最新文件夹: {latest_folder['file_name']}")
+        fid_latest = latest_folder["fid"]
+        apks_latest = get_apks_in_dir(STOKEN, fid_latest)
+        print(f"📦 最新文件夹 APK 文件 {len(apks_latest)} 个")
+        for f in apks_latest:
+            print(f"- {f['file_name']} | {f['size']} bytes")
+            result_files.append(f)
+    else:
+        print(f"⚠ 目录 {dir2[:8]} 没有子文件夹")
 
     # 保存 JSON
-    with open("apk_files.json", "w", encoding="utf-8") as f:
-        json.dump(files, f, ensure_ascii=False, indent=2)
-    print("\n💾 APK 文件列表已保存到 apk_files.json")
-
-    # 检查版本变化
-    latest_version = detect_new_version(files)
-    last_version = None
-    if os.path.exists(LAST_VERSION_FILE):
-        with open(LAST_VERSION_FILE, "r", encoding="utf-8") as f:
-            last_version = f.read().strip()
-
-    if latest_version and latest_version != last_version:
-        print(f"\n🚀 检测到新版本: {latest_version}")
-        with open(LAST_VERSION_FILE, "w", encoding="utf-8") as f:
-            f.write(latest_version)
-    else:
-        print("\n✅ 当前没有新版本")
+    with open("latest_apks.json", "w", encoding="utf-8") as f:
+        json.dump(result_files, f, ensure_ascii=False, indent=2)
+    print("\n💾 已保存最新 APK 文件列表到 latest_apks.json")
 
 if __name__ == "__main__":
     main()
