@@ -2,8 +2,8 @@ name: Sync Quark APK → GitHub Release → Telegram
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */6 * * *"
+  #schedule:
+    #- cron: "0 */6 * * *"
 
 permissions:
   contents: write
@@ -27,6 +27,7 @@ jobs:
         env:
           QUARK_STOKEN: ${{ secrets.QUARK_STOKEN }}
           QUARK_ROOT_FID: ${{ secrets.QUARK_ROOT_FID }}
+          QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
