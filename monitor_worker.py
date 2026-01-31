@@ -9,7 +9,6 @@ import threading
 WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
 PWD_ID = "cb0ee2b9ac64"
 PAGE_SIZE = 50
-
 TARGET_DIRS = [
     "8d6dce95581c49f29183380d3805e9b5",
     "f0c75c96e96e4310b96383b4b22040e3",
@@ -35,17 +34,14 @@ else:
     print("QUARK_COOKIE 为空！只能运行列表扫描，无法转存/下载")
 print("=== 调试结束 ===\n")
 
-# 如果 STOKEN 缺失，直接退出（必须有）
 if not STOKEN:
     print("❌ 缺少 QUARK_STOKEN，无法继续")
     exit(1)
 
-# COOKIE 缺失只警告，继续列表功能
 if not COOKIE:
     print("⚠️ 缺少 QUARK_COOKIE → 只能扫描列表，无法转存和获取下载链接")
 
-# 全局缓存
-FILES_CACHE = {}  # fid -> {"local_fid": "...", "expires": timestamp, "done": False, "ori_urls": [], "cookies": ""}
+FILES_CACHE = {}
 FILES_LOCK = threading.Lock()
 
 HEADERS = {
@@ -55,7 +51,6 @@ HEADERS = {
     "Cookie": COOKIE,
 }
 
-# ===== 测试个人网盘是否可访问（验证 Cookie 有效性） =====
 def test_personal_drive():
     test_url = "https://drive-pc.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid=0&_fetch_total=1&_size=10"
     print("\n=== 测试个人网盘访问 ===")
@@ -70,7 +65,6 @@ def test_personal_drive():
         print(f"测试失败: {str(e)}")
     print("=== 测试结束 ===\n")
 
-# ===== 列表相关函数 =====
 def fetch_page(pdir_fid, page=1):
     print(f"请求列表: pdir_fid={pdir_fid[:8]}, page={page}")
     try:
@@ -126,7 +120,6 @@ def get_latest_subfolder(fid):
     print(f" 找到最新子文件夹: {latest.get('file_name', '?')}")
     return latest
 
-# ===== 转存文件 =====
 def copy_file(fid, share_fid_token=""):
     if not COOKIE:
         print(f" 无 COOKIE，跳过转存 {fid[:8]}")
@@ -170,13 +163,11 @@ def copy_file(fid, share_fid_token=""):
         print(f" 转存异常 {fid[:8]}: {str(e)}")
         return None
 
-# ===== 获取原画下载链接 + 自动下载 APK =====
 def get_original_download(fid, share_fid_token="", name="", size=0):
     if not COOKIE:
         print(f" 无 COOKIE，跳过下载链接获取 {fid[:8]}")
         return [], ""
 
-    # 先检查缓存
     with FILES_LOCK:
         if fid in FILES_CACHE:
             c = FILES_CACHE[fid]
@@ -185,8 +176,6 @@ def get_original_download(fid, share_fid_token="", name="", size=0):
                 return c["ori_urls"], c.get("cookies", "")
 
     print(f" 开始获取下载链接 {fid[:8]}...")
-
-    # 步骤1: 尝试直接从分享链接获取下载（不转存，优先级最高）
     direct_url = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
     direct_payload = {
         "fids": [fid],
@@ -216,7 +205,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0):
                     }
                 print(f" 直接下载成功 ({len(urls)} 条链接)")
 
-                # 自动下载 APK（取第一条链接）
+                # 只下载一个 APK 测试
                 apk_url = urls[0]
                 apk_filename = name.replace(" ", "_").replace("/", "_") + ".apk"
                 print(f"  开始下载 APK: {apk_filename} ({size:,} bytes)")
@@ -232,7 +221,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0):
                     file_size_mb = os.path.getsize(apk_filename) / (1024 * 1024)
                     print(f"  下载完成: {apk_filename} ({file_size_mb:.2f} MB)")
                 except Exception as e:
-                    print(f"  APK 下载失败 {apk_filename}: {str(e)}")
+                    print(f"  下载失败 {apk_filename}: {str(e)}")
 
                 return urls, cookies_str
             else:
@@ -242,14 +231,12 @@ def get_original_download(fid, share_fid_token="", name="", size=0):
     except Exception as e:
         print(f" 直接下载异常: {str(e)}")
 
-    # 步骤2: 如果直接下载失败，才尝试转存
     print(f" 直接下载失败，尝试转存 {fid[:8]}...")
     local_fid = copy_file(fid, share_fid_token)
     if not local_fid:
         print(f" 转存失败，无法继续 {fid[:8]}")
         return [], ""
 
-    # 步骤3: 用转存后的 local_fid 获取下载链接
     url = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
     payload = {"fids": [local_fid]}
     print(f" 请求转码下载链接 {fid[:8]} (local_fid={local_fid[:8]})...")
@@ -277,7 +264,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0):
             }
         print(f" 获取成功 {fid[:8]} ({len(urls)} 条链接)")
 
-        # 自动下载 APK（取第一条）
+        # 下载一个 APK 测试
         apk_url = urls[0]
         apk_filename = name.replace(" ", "_").replace("/", "_") + ".apk"
         print(f"  开始下载 APK: {apk_filename} ({size:,} bytes)")
@@ -293,14 +280,13 @@ def get_original_download(fid, share_fid_token="", name="", size=0):
             file_size_mb = os.path.getsize(apk_filename) / (1024 * 1024)
             print(f"  下载完成: {apk_filename} ({file_size_mb:.2f} MB)")
         except Exception as e:
-            print(f"  APK 下载失败 {apk_filename}: {str(e)}")
+            print(f"  下载失败 {apk_filename}: {str(e)}")
 
         return urls, cookies_str
     except Exception as e:
         print(f" 获取链接失败 {fid[:8]}: {str(e)}")
         return [], ""
 
-# ===== 删除转存文件 =====
 def cleanup_transferred_files():
     if not COOKIE:
         print("无 COOKIE，跳过清理")
@@ -325,24 +311,25 @@ def cleanup_transferred_files():
         except Exception as e:
             print(f"删除失败 {local_fid[:8]}: {str(e)}")
 
-# ===== 主逻辑 =====
 def main():
-    # 先测试个人网盘访问
     test_personal_drive()
 
     all_apks = []
     download_results = []
+    downloaded_files = []  # 记录下载的文件名，用于上传
 
     print("\n=== 扫描目录1 ===")
     apks1 = get_apks_in_dir(TARGET_DIRS[0])
-    for f in apks1:
+    if apks1:
+        # 只处理第一个 APK 测试
+        f = apks1[0]
         name = f.get("file_name", "?")
         size = f.get("size", 0)
         fid = f.get("fid", "")
         sft = f.get("share_fid_token", "")
-        print(f" • {name:<50} {size:>12,} B")
+        print(f" • 测试下载第一个 APK: {name:<50} {size:>12,} B")
         all_apks.append(f)
-        urls, ck = get_original_download(fid, sft, name, size)  # 传 name 和 size 用于下载
+        urls, ck = get_original_download(fid, sft, name, size)
         if urls:
             download_results.append({
                 "name": name,
@@ -352,29 +339,34 @@ def main():
                 "cookies": ck
             })
             print(f" → 下载链接已获取 ({len(urls)} 条)")
+            # 下载的文件名已保存到本地
+            apk_filename = name.replace(" ", "_").replace("/", "_") + ".apk"
+            if os.path.exists(apk_filename):
+                downloaded_files.append(apk_filename)
 
-    print("\n=== 扫描目录2 - 最新子文件夹 ===")
-    latest = get_latest_subfolder(TARGET_DIRS[1])
-    if latest:
-        print(f"最新文件夹：{latest.get('file_name', '?')}")
-        apks2 = get_apks_in_dir(latest["fid"])
-        for f in apks2:
-            name = f.get("file_name", "?")
-            size = f.get("size", 0)
-            fid = f.get("fid", "")
-            sft = f.get("share_fid_token", "")
-            print(f" • {name:<50} {size:>12,} B")
-            all_apks.append(f)
-            urls, ck = get_original_download(fid, sft, name, size)
-            if urls:
-                download_results.append({
-                    "name": name,
-                    "size": size,
-                    "fid": fid,
-                    "urls": urls,
-                    "cookies": ck
-                })
-                print(f" → 下载链接已获取 ({len(urls)} 条)")
+    # 目录2 可以注释掉测试
+    # print("\n=== 扫描目录2 - 最新子文件夹 ===")
+    # latest = get_latest_subfolder(TARGET_DIRS[1])
+    # if latest:
+    #     print(f"最新文件夹：{latest.get('file_name', '?')}")
+    #     apks2 = get_apks_in_dir(latest["fid"])
+    #     for f in apks2:
+    #         name = f.get("file_name", "?")
+    #         size = f.get("size", 0)
+    #         fid = f.get("fid", "")
+    #         sft = f.get("share_fid_token", "")
+    #         print(f" • {name:<50} {size:>12,} B")
+    #         all_apks.append(f)
+    #         urls, ck = get_original_download(fid, sft, name, size)
+    #         if urls:
+    #             download_results.append({
+    #                 "name": name,
+    #                 "size": size,
+    #                 "fid": fid,
+    #                 "urls": urls,
+    #                 "cookies": ck
+    #             })
+    #             print(f" → 下载链接已获取 ({len(urls)} 条)")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     with open(f"apks_{ts}.json", "w", encoding="utf-8") as f:
@@ -386,7 +378,8 @@ def main():
             json.dump(download_results, f, ensure_ascii=False, indent=2)
         print(f"已保存 {len(download_results)} 条下载信息到 downloads_{ts}.json")
 
-    # 清理
+    print("\n已下载的文件（用于上传）:", downloaded_files)
+
     print("\n开始清理转存文件...")
     cleanup_transferred_files()
 
