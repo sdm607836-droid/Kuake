@@ -64,8 +64,6 @@ def test_personal_drive():
         print(f"读个人网盘测试: 状态码 {r.status_code}")
         if r.status_code == 200:
             print("Cookie 有效，能访问个人网盘")
-            # 可选：打印部分响应查看是否正常
-            # print("响应示例:", r.json().get("data", {}).get("list", [])[:2])
         else:
             print(f"Cookie 无效或风控: {r.text[:200]}")
     except Exception as e:
@@ -172,8 +170,8 @@ def copy_file(fid, share_fid_token=""):
         print(f" 转存异常 {fid[:8]}: {str(e)}")
         return None
 
-# ===== 获取原画下载链接 =====
-def get_original_download(fid, share_fid_token=""):
+# ===== 获取原画下载链接 + 自动下载 APK =====
+def get_original_download(fid, share_fid_token="", name="", size=0):
     if not COOKIE:
         print(f" 无 COOKIE，跳过下载链接获取 {fid[:8]}")
         return [], ""
@@ -195,10 +193,10 @@ def get_original_download(fid, share_fid_token=""):
         "pwd_id": PWD_ID,
         "stoken": STOKEN,
     }
-    print(f"  尝试直接下载 (不转存) {fid[:8]}...")
+    print(f" 尝试直接下载 (不转存) {fid[:8]}...")
     try:
         r = requests.post(direct_url, json=direct_payload, headers=HEADERS, timeout=30)
-        print(f"    直接下载状态码: {r.status_code}")
+        print(f" 直接下载状态码: {r.status_code}")
         if r.status_code == 200:
             data = r.json()
             urls = []
@@ -216,26 +214,45 @@ def get_original_download(fid, share_fid_token=""):
                         "expires": expires,
                         "done": False
                     }
-                print(f"    直接下载成功 ({len(urls)} 条链接)")
+                print(f" 直接下载成功 ({len(urls)} 条链接)")
+
+                # 自动下载 APK（取第一条链接）
+                apk_url = urls[0]
+                apk_filename = name.replace(" ", "_").replace("/", "_") + ".apk"
+                print(f"  开始下载 APK: {apk_filename} ({size:,} bytes)")
+                try:
+                    dl_headers = HEADERS.copy()
+                    dl_headers["Cookie"] = cookies_str
+                    dl_r = requests.get(apk_url, headers=dl_headers, stream=True, timeout=600)
+                    dl_r.raise_for_status()
+                    with open(apk_filename, 'wb') as f:
+                        for chunk in dl_r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    file_size_mb = os.path.getsize(apk_filename) / (1024 * 1024)
+                    print(f"  下载完成: {apk_filename} ({file_size_mb:.2f} MB)")
+                except Exception as e:
+                    print(f"  APK 下载失败 {apk_filename}: {str(e)}")
+
                 return urls, cookies_str
             else:
-                print("    直接下载无有效 url")
+                print(" 直接下载无有效 url")
         else:
-            print(f"    直接下载失败: {r.text[:200]}...")
+            print(f" 直接下载失败: {r.text[:200]}...")
     except Exception as e:
-        print(f"    直接下载异常: {str(e)}")
+        print(f" 直接下载异常: {str(e)}")
 
     # 步骤2: 如果直接下载失败，才尝试转存
-    print(f"  直接下载失败，尝试转存 {fid[:8]}...")
+    print(f" 直接下载失败，尝试转存 {fid[:8]}...")
     local_fid = copy_file(fid, share_fid_token)
     if not local_fid:
-        print(f"  转存失败，无法继续 {fid[:8]}")
+        print(f" 转存失败，无法继续 {fid[:8]}")
         return [], ""
 
     # 步骤3: 用转存后的 local_fid 获取下载链接
     url = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
     payload = {"fids": [local_fid]}
-    print(f"  请求转码下载链接 {fid[:8]} (local_fid={local_fid[:8]})...")
+    print(f" 请求转码下载链接 {fid[:8]} (local_fid={local_fid[:8]})...")
     try:
         r = requests.post(url, json=payload, headers=HEADERS, timeout=60)
         r.raise_for_status()
@@ -246,7 +263,7 @@ def get_original_download(fid, share_fid_token=""):
                 if "download_url" in item and item["download_url"]:
                     urls.append(item["download_url"])
         if not urls:
-            print(f"  无下载链接 {fid[:8]}")
+            print(f" 无下载链接 {fid[:8]}")
             return [], ""
         cookies_str = "; ".join([f"{k}={v}" for k, v in r.cookies.items()])
         expires = time.time() + 86400
@@ -258,10 +275,29 @@ def get_original_download(fid, share_fid_token=""):
                 "expires": expires,
                 "done": False
             }
-        print(f"  获取成功 {fid[:8]} ({len(urls)} 条链接)")
+        print(f" 获取成功 {fid[:8]} ({len(urls)} 条链接)")
+
+        # 自动下载 APK（取第一条）
+        apk_url = urls[0]
+        apk_filename = name.replace(" ", "_").replace("/", "_") + ".apk"
+        print(f"  开始下载 APK: {apk_filename} ({size:,} bytes)")
+        try:
+            dl_headers = HEADERS.copy()
+            dl_headers["Cookie"] = cookies_str
+            dl_r = requests.get(apk_url, headers=dl_headers, stream=True, timeout=600)
+            dl_r.raise_for_status()
+            with open(apk_filename, 'wb') as f:
+                for chunk in dl_r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            file_size_mb = os.path.getsize(apk_filename) / (1024 * 1024)
+            print(f"  下载完成: {apk_filename} ({file_size_mb:.2f} MB)")
+        except Exception as e:
+            print(f"  APK 下载失败 {apk_filename}: {str(e)}")
+
         return urls, cookies_str
     except Exception as e:
-        print(f"  获取链接失败 {fid[:8]}: {str(e)}")
+        print(f" 获取链接失败 {fid[:8]}: {str(e)}")
         return [], ""
 
 # ===== 删除转存文件 =====
@@ -291,7 +327,7 @@ def cleanup_transferred_files():
 
 # ===== 主逻辑 =====
 def main():
-    # 先测试个人网盘访问（验证 Cookie 是否有效）
+    # 先测试个人网盘访问
     test_personal_drive()
 
     all_apks = []
@@ -306,7 +342,7 @@ def main():
         sft = f.get("share_fid_token", "")
         print(f" • {name:<50} {size:>12,} B")
         all_apks.append(f)
-        urls, ck = get_original_download(fid, sft)
+        urls, ck = get_original_download(fid, sft, name, size)  # 传 name 和 size 用于下载
         if urls:
             download_results.append({
                 "name": name,
@@ -329,7 +365,7 @@ def main():
             sft = f.get("share_fid_token", "")
             print(f" • {name:<50} {size:>12,} B")
             all_apks.append(f)
-            urls, ck = get_original_download(fid, sft)
+            urls, ck = get_original_download(fid, sft, name, size)
             if urls:
                 download_results.append({
                     "name": name,
