@@ -1,205 +1,221 @@
 import os
 import json
-import requests
 import time
+import requests
 from datetime import datetime
 import threading
 import re
-from tqdm import tqdm
 
-# ===== 配置区 =====
+# ================= 配置 =================
 WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
 PWD_ID = "cb0ee2b9ac64"
 PAGE_SIZE = 50
 
-TARGET_DIRS = [
-    "8d6dce95581c49f29183380d3805e9b5",  # OK Pro版目录
-    "f0c75c96e96e4310b96383b4b22040e3",  # OK 标准版目录
-]
+TARGET_DIR_PRO = "8d6dce95581c49f29183380d3805e9b5"
+TARGET_DIR_OK = "f0c75c96e96e4310b96383b4b22040e3"
 
-# 重命名映射（Pro版）
-PRO_RENAME_MAP = {
-    r"OK影视Pro-电视版-32位-.*\.apk": "leanback-arm64_v7a-pro.apk",
-    r"OK影视Pro-电视版-64位-.*\.apk": "leanback-arm64_v8a-pro.apk",
-    r"OK影视Pro-手机版-.*(?<!模拟器)\.apk": "mobile-arm64_v8a-pro.apk",
-    r"OK影视Pro-手机版-.*模拟器.*\.apk": "mobile-arm64_v7a-pro.apk",
-}
+REPO = os.getenv("GITHUB_REPOSITORY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# 重命名映射（标准版）
-OK_RENAME_MAP = {
-    r"海信专版-OK影视-.*\.apk": "hisense-tv-customized.apk",
-    r"mobile-armeabi_v7a-.*\.apk": "mobile-arm64_v7a-ok.apk",
-    r"mobile-arm64_v8a-.*\.apk": "mobile-arm64_v8a-ok.apk",
-    r"leanback-armeabi_v7a-.*\.apk": "leanback-arm64_v7a-ok.apk",
-    r"leanback-arm64_v8a-.*\.apk": "leanback-arm64_v8a-ok.apk",
-}
-
-# ===== 环境变量 =====
-print("=== 调试信息 ===")
 STOKEN = os.getenv("QUARK_STOKEN")
 COOKIE = os.getenv("QUARK_COOKIE")
-
-print(f"QUARK_STOKEN 是否存在: {'是' if STOKEN else '否'}")
-print(f"QUARK_COOKIE 是否存在: {'是' if COOKIE else '否'}")
-print("=== 调试结束 ===\n")
 
 if not STOKEN:
     print("❌ 缺少 QUARK_STOKEN")
     exit(1)
 
-FILES_CACHE = {}
-FILES_LOCK = threading.Lock()
-
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
+    "User-Agent": "quark-cloud-drive",
     "Referer": "https://drive.quark.cn/",
     "Content-Type": "application/json",
     "Cookie": COOKIE or "",
 }
 
-# ===== 基础函数 =====
-def fetch_page(pdir_fid, page=1):
-    try:
-        r = requests.post(
-            WORKER_URL,
-            json={
-                "pwd_id": PWD_ID,
-                "stoken": STOKEN,
-                "pdir_fid": pdir_fid,
-                "_page": page,
-                "_size": PAGE_SIZE,
-                "ver": 2,
-                "pr": "ucpro",
-                "fr": "h5",
-            },
-            timeout=60,
-        )
-        r.raise_for_status()
-        return r.json().get("data", {}).get("detail_info", {}).get("list", [])
-    except Exception as e:
-        print("列表获取失败:", e)
-        return []
+FILES_CACHE = {}
+FILES_LOCK = threading.Lock()
 
-def get_apks_in_dir(fid):
-    files = []
+# ================= 工具函数 =================
+def fetch_page(pdir_fid, page=1):
+    r = requests.post(
+        WORKER_URL,
+        json={
+            "pwd_id": PWD_ID,
+            "stoken": STOKEN,
+            "pdir_fid": pdir_fid,
+            "_page": page,
+            "_size": PAGE_SIZE,
+        },
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json().get("data", {}).get("detail_info", {}).get("list", [])
+
+def list_all(fid):
+    all_files = []
     page = 1
     while True:
         data = fetch_page(fid, page)
         if not data:
             break
-        files.extend(data)
+        all_files.extend(data)
         if len(data) < PAGE_SIZE:
             break
         page += 1
+    return all_files
 
-    apks = [
-        f for f in files
-        if not f.get("dir")
-        and f.get("file_type") == 1
-        and f.get("file_name", "").endswith(".apk")
-    ]
-    txts = [
-        f for f in files
-        if not f.get("dir")
-        and f.get("file_name", "").endswith(".txt")
-    ]
-    return apks, txts
-
-def get_latest_subfolder(fid):
-    files = fetch_page(fid, 1)
-    folders = [f for f in files if f.get("dir")]
+def latest_subfolder(fid):
+    folders = [f for f in fetch_page(fid) if f.get("dir")]
     if not folders:
         return None
 
-    def sort_key(f):
+    def key(f):
         digits = "".join(c for c in f.get("file_name", "") if c.isdigit())
         return int(digits) if digits else 0
 
-    return max(folders, key=sort_key)
+    return max(folders, key=key)
 
-def rename_apk(name):
-    for p, n in PRO_RENAME_MAP.items():
-        if re.search(p, name):
-            return n
-    for p, n in OK_RENAME_MAP.items():
-        if re.search(p, name):
-            return n
-    return name.replace(" ", "_")
+def extract_version(text):
+    m = re.search(r"\d+(\.\d+)+", text)
+    return m.group(0) if m else "unknown"
 
-def download_file(url, filename, cookies):
-    headers = {"Cookie": cookies}
-    r = requests.get(url, headers=headers, stream=True, timeout=600)
-    r.raise_for_status()
-    total = int(r.headers.get("content-length", 0))
-
-    with open(filename, "wb") as f, tqdm(
-        total=total, unit="B", unit_scale=True, desc=filename
-    ) as bar:
-        for chunk in r.iter_content(8192):
-            if chunk:
-                f.write(chunk)
-                bar.update(len(chunk))
-
-def get_original_download(fid, name, is_txt=False):
-    if not COOKIE:
-        return
-
+# ================= 下载 =================
+def get_download_url(fid):
+    url = "https://drive-pc.quark.cn/1/clouddrive/file/download"
     r = requests.post(
-        "https://drive-pc.quark.cn/1/clouddrive/file/download",
+        url,
         json={"fids": [fid], "pwd_id": PWD_ID, "stoken": STOKEN},
         headers=HEADERS,
-        timeout=30,
+        timeout=60,
     )
-    if r.status_code != 200:
-        return
-
+    r.raise_for_status()
     data = r.json().get("data", [])
-    if not data:
-        return
+    for item in data:
+        if item.get("download_url"):
+            cookies = "; ".join(f"{k}={v}" for k, v in r.cookies.items())
+            return item["download_url"], cookies
+    return None, None
 
-    url = data[0].get("download_url")
-    if not url:
-        return
+def download_file(url, cookies, filename):
+    h = HEADERS.copy()
+    h["Cookie"] = cookies
+    with requests.get(url, headers=h, stream=True, timeout=600) as r:
+        r.raise_for_status()
+        with open(filename, "wb") as f:
+            for c in r.iter_content(8192):
+                if c:
+                    f.write(c)
 
-    cookies = "; ".join(f"{k}={v}" for k, v in r.cookies.items())
+# ================= 重命名规则 =================
+PRO_RENAME = {
+    "电视版-32": "leanback-arm64_v7a-pro.apk",
+    "电视版-64": "leanback-arm64_v8a-pro.apk",
+    "手机版-64": "mobile-arm64_v8a-pro.apk",
+    "模拟器": "mobile-arm64_v7a-pro.apk",
+}
 
-    if is_txt:
-        filename = "Version.txt"
-    else:
-        filename = rename_apk(name)
+OK_RENAME = {
+    "海信": "hisense-tv-customized.apk",
+    "mobile-armeabi": "mobile-arm64_v7a-ok.apk",
+    "mobile-arm64": "mobile-arm64_v8a-ok.apk",
+    "leanback-armeabi": "leanback-arm64_v7a-ok.apk",
+    "leanback-arm64": "leanback-arm64_v8a-ok.apk",
+}
 
-    print("下载:", filename)
-    download_file(url, filename, cookies)
+EXCLUDE = [
+    "OK影视-电视版",
+    "OK影视-手机版",
+]
 
-# ===== 主流程 =====
+def rename_apk(name, is_pro):
+    table = PRO_RENAME if is_pro else OK_RENAME
+    for k, v in table.items():
+        if k in name:
+            return v
+    return None
+
+# ================= GitHub Release =================
+def upload_release(file, tag):
+    url = f"https://uploads.github.com/repos/{REPO}/releases/{tag}/assets?name={os.path.basename(file)}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Content-Type": "application/octet-stream",
+    }
+    with open(file, "rb") as f:
+        r = requests.post(url, headers=headers, data=f)
+    if r.status_code not in (200, 201):
+        print("上传失败:", r.text)
+
+def get_or_create_release(tag):
+    api = f"https://api.github.com/repos/{REPO}/releases/tags/{tag}"
+    r = requests.get(api, headers={"Authorization": f"token {GITHUB_TOKEN}"})
+    if r.status_code == 200:
+        return r.json()["id"]
+
+    r = requests.post(
+        f"https://api.github.com/repos/{REPO}/releases",
+        headers={"Authorization": f"token {GITHUB_TOKEN}"},
+        json={"tag_name": tag, "name": tag},
+    )
+    r.raise_for_status()
+    return r.json()["id"]
+
+# ================= 主流程 =================
+def process_dir(fid, is_pro):
+    files = list_all(fid)
+    txt_content = ""
+    version = "unknown"
+
+    for f in files:
+        name = f["file_name"]
+
+        if f.get("file_type") == 2:
+            url, ck = get_download_url(f["fid"])
+            if url:
+                tmp = f"tmp_{name}"
+                download_file(url, ck, tmp)
+                with open(tmp, "r", encoding="utf-8", errors="ignore") as tf:
+                    txt_content = tf.read()
+                version = extract_version(txt_content)
+                os.remove(tmp)
+
+    for f in files:
+        if f.get("dir"):
+            continue
+        name = f["file_name"]
+
+        if any(x in name for x in EXCLUDE):
+            continue
+
+        new_name = rename_apk(name, is_pro)
+        if not new_name:
+            continue
+
+        url, ck = get_download_url(f["fid"])
+        if not url:
+            continue
+
+        download_file(url, ck, new_name)
+        upload_release(new_name, RELEASE_ID)
+        os.remove(new_name)
+
+    txt_name = "Version-Pro.txt" if is_pro else "Version-OK.txt"
+    with open(txt_name, "w", encoding="utf-8") as f:
+        f.write(txt_content)
+    upload_release(txt_name, RELEASE_ID)
+    os.remove(txt_name)
+
 def main():
-    # 清理旧文件
-    for f in os.listdir():
-        if f.endswith((".apk", ".txt")):
-            os.remove(f)
+    global RELEASE_ID
+    tag = datetime.now().strftime("auto-%Y%m%d")
+    RELEASE_ID = get_or_create_release(tag)
 
-    # ===== 目录1：Pro =====
-    print("=== 扫描 OK Pro ===")
-    apks1, txts1 = get_apks_in_dir(TARGET_DIRS[0])
+    print("处理 OK Pro 版")
+    process_dir(TARGET_DIR_PRO, True)
 
-    for f in txts1:
-        get_original_download(f["fid"], f["file_name"], is_txt=True)
-
-    if apks1:
-        smallest = min(apks1, key=lambda x: x.get("size", 0))
-        get_original_download(smallest["fid"], smallest["file_name"])
-
-    # ===== 目录2：标准版 =====
-    print("=== 扫描 OK 标准版 ===")
-    latest = get_latest_subfolder(TARGET_DIRS[1])
+    print("处理 OK 标准版")
+    latest = latest_subfolder(TARGET_DIR_OK)
     if latest:
-        apks2, txts2 = get_apks_in_dir(latest["fid"])
-        for f in txts2:
-            get_original_download(f["fid"], f["file_name"], is_txt=True)
-        for f in apks2:
-            get_original_download(f["fid"], f["file_name"])
-
-    print("=== 完成 ===")
+        process_dir(latest["fid"], False)
 
 if __name__ == "__main__":
     main()
