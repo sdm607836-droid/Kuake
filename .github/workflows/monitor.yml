@@ -3,13 +3,13 @@ name: Monitor Quark Share & Upload to Release
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'  # 每6小时
+    - cron: '0 */6 * * *'  # 每6小时运行一次
 
 jobs:
   monitor-and-upload:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 必须加这个权限才能上传 release
+      contents: write  # 必须，用于创建/更新 Release 和上传文件
 
     steps:
       - name: Checkout repository
@@ -29,7 +29,7 @@ jobs:
         env:
           QUARK_STOKEN: ${{ secrets.QUARK_STOKEN }}
           QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}  # 用于 gh CLI
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}  # 用于 gh CLI 操作 Release
         run: python monitor_worker.py
 
       - name: Upload JSON to Release
@@ -37,6 +37,31 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          # 用 gh CLI 上传所有 downloads_*.json 到 latest release
-          # 如果没有 latest tag，会自动创建
-          gh release upload latest downloads_*.json --clobber --repo $GITHUB_REPOSITORY || echo "No json file or upload failed"
+          # 定义 Release tag 和基本信息
+          RELEASE_TAG="latest"
+          RELEASE_TITLE="Latest Quark Downloads - $(date +'%Y-%m-%d %H:%M')"
+          RELEASE_NOTES="自动监控夸克分享更新\n生成时间: $(date +'%Y-%m-%d %H:%M')\n文件列表见 downloads_*.json"
+
+          echo "开始处理 Release: $RELEASE_TAG"
+
+          # 检查是否已存在 latest Release
+          if gh release view $RELEASE_TAG >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG 已存在，正在更新文件..."
+            gh release upload $RELEASE_TAG downloads_*.json --clobber --repo $GITHUB_REPOSITORY || {
+              echo "上传失败，可能无文件或权限问题"
+              exit 1
+            }
+            echo "更新完成"
+          else
+            echo "Release $RELEASE_TAG 不存在，正在创建..."
+            gh release create $RELEASE_TAG downloads_*.json \
+              --title "$RELEASE_TITLE" \
+              --notes "$RELEASE_NOTES" \
+              --repo $GITHUB_REPOSITORY || {
+              echo "创建 Release 失败，请检查 GH_TOKEN 权限"
+              exit 1
+            }
+            echo "创建完成"
+          fi
+
+          echo "Release 处理结束"
