@@ -15,15 +15,38 @@ TARGET_DIRS = [
     "f0c75c96e96e4310b96383b4b22040e3",
 ]
 
+# 调试：立即打印环境变量状态（最重要的一步）
+print("=== 调试信息 ===")
 STOKEN = os.getenv("QUARK_STOKEN")
-COOKIE = os.getenv("QUARK_COOKIE")  # 必须设置完整的 Cookie 字符串
+COOKIE = os.getenv("QUARK_COOKIE")
 
-if not STOKEN or not COOKIE:
-    print("❌ 缺少 QUARK_STOKEN 或 QUARK_COOKIE")
+print(f"QUARK_STOKEN 是否存在: {'是' if STOKEN else '否'}")
+if STOKEN:
+    print(f"QUARK_STOKEN 长度: {len(STOKEN)}")
+    print(f"QUARK_STOKEN 前10字符: {STOKEN[:10]}...")
+else:
+    print("QUARK_STOKEN 为空！请检查 GitHub Secrets 名称是否为 QUARK_STOKEN（全大写）")
+
+print(f"QUARK_COOKIE 是否存在: {'是' if COOKIE else '否'}")
+if COOKIE:
+    print(f"QUARK_COOKIE 长度: {len(COOKIE)}")
+    print(f"QUARK_COOKIE 前20字符: {COOKIE[:20]}...")
+else:
+    print("QUARK_COOKIE 为空！只能运行列表扫描，无法转存/下载")
+
+print("=== 调试结束 ===\n")
+
+# 如果 STOKEN 缺失，直接退出（必须有）
+if not STOKEN:
+    print("❌ 缺少 QUARK_STOKEN，无法继续")
     exit(1)
 
-# 全局缓存：记录转存后的 local_fid 和过期时间
-FILES_CACHE = {}           # { fid: { "local_fid": "...", "expires": timestamp, "done": False } }
+# COOKIE 缺失只警告，继续列表功能
+if not COOKIE:
+    print("⚠️ 缺少 QUARK_COOKIE → 只能扫描列表，无法转存和获取下载链接")
+
+# 全局缓存
+FILES_CACHE = {}  # fid -> {"local_fid": "...", "expires": timestamp, "done": False, "ori_urls": [], "cookies": ""}
 FILES_LOCK = threading.Lock()
 
 HEADERS = {
@@ -35,6 +58,7 @@ HEADERS = {
 
 # ===== 列表相关函数 =====
 def fetch_page(pdir_fid, page=1):
+    print(f"请求列表: pdir_fid={pdir_fid[:8]}, page={page}")
     try:
         r = requests.post(
             WORKER_URL,
@@ -51,9 +75,12 @@ def fetch_page(pdir_fid, page=1):
             timeout=60,
         )
         r.raise_for_status()
-        return r.json().get("data", {}).get("detail_info", {}).get("list", [])
+        data = r.json()
+        list_data = data.get("data", {}).get("detail_info", {}).get("list", [])
+        print(f"  返回 {len(list_data)} 条数据")
+        return list_data
     except Exception as e:
-        print(f"列表请求失败 {pdir_fid[:8]}: {e}")
+        print(f"列表请求失败 {pdir_fid[:8]}: {str(e)}")
         return []
 
 def get_apks_in_dir(fid):
@@ -67,21 +94,30 @@ def get_apks_in_dir(fid):
         if len(page_data) < PAGE_SIZE:
             break
         page += 1
-    return [f for f in files if not f.get("dir") and f.get("file_type") == 1]
+    apks = [f for f in files if not f.get("dir") and f.get("file_type") == 1]
+    print(f"  目录 {fid[:8]} 共找到 {len(apks)} 个 APK")
+    return apks
 
 def get_latest_subfolder(fid):
     files = fetch_page(fid)
     folders = [f for f in files if f.get("dir")]
     if not folders:
+        print(f"  目录 {fid[:8]} 无子文件夹")
         return None
-    def key(f): 
+    def key(f):
         name = f.get("file_name", "")
         digits = "".join(c for c in name if c.isdigit())
         return int(digits) if digits else -1
-    return max(folders, key=key)
+    latest = max(folders, key=key)
+    print(f"  找到最新子文件夹: {latest.get('file_name', '?')}")
+    return latest
 
 # ===== 转存文件 =====
-def copy_file(fid, share_fid_token):
+def copy_file(fid, share_fid_token=""):
+    if not COOKIE:
+        print(f"  无 COOKIE，跳过转存 {fid[:8]}")
+        return None
+
     url = "https://drive.quark.cn/1/clouddrive/share/sharepage/save?pr=ucpro&fr=pc"
     payload = {
         "fid_list": [fid],
@@ -92,14 +128,14 @@ def copy_file(fid, share_fid_token):
         "pdir_fid": "0",
         "scene": "link",
     }
-
+    print(f"开始转存 {fid[:8]}...")
     try:
         r = requests.post(url, json=payload, headers=HEADERS, timeout=60)
         r.raise_for_status()
         data = r.json()
         task_id = data.get("data", {}).get("task_id")
         if not task_id:
-            print(f"转存 {fid[:8]} 失败：无 task_id")
+            print(f"  转存失败 {fid[:8]}: 无 task_id")
             return None
 
         for i in range(60):
@@ -109,24 +145,30 @@ def copy_file(fid, share_fid_token):
             js = rs.json()
             code = js.get("code")
             if code in [31001, 32003]:
-                print(f"转存失败 {fid[:8]} code={code}")
+                print(f"  转存失败 {fid[:8]} code={code}")
                 return None
             fids = js.get("data", {}).get("save_as", {}).get("save_as_top_fids", [])
             for lf in fids:
                 if lf:
+                    print(f"  转存成功 {fid[:8]} → local_fid={lf[:8]}")
                     return lf
-        print(f"转存 {fid[:8]} 超时")
+        print(f"  转存超时 {fid[:8]}")
         return None
     except Exception as e:
-        print(f"转存异常 {fid[:8]}: {e}")
+        print(f"  转存异常 {fid[:8]}: {str(e)}")
         return None
 
 # ===== 获取原画下载链接 =====
-def get_original_download(fid, share_fid_token):
+def get_original_download(fid, share_fid_token=""):
+    if not COOKIE:
+        print(f"  无 COOKIE，跳过下载链接获取 {fid[:8]}")
+        return [], ""
+
     with FILES_LOCK:
         if fid in FILES_CACHE:
             c = FILES_CACHE[fid]
             if c.get("ori_urls") and c.get("expires", 0) > time.time():
+                print(f"  缓存命中 {fid[:8]}")
                 return c["ori_urls"], c.get("cookies", "")
 
     local_fid = copy_file(fid, share_fid_token)
@@ -135,25 +177,22 @@ def get_original_download(fid, share_fid_token):
 
     url = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
     payload = {"fids": [local_fid]}
-
+    print(f"  请求下载链接 {fid[:8]}...")
     try:
         r = requests.post(url, json=payload, headers=HEADERS, timeout=60)
         r.raise_for_status()
         data = r.json()
-
         urls = []
         if "data" in data and isinstance(data["data"], list):
             for item in data["data"]:
                 if "download_url" in item and item["download_url"]:
                     urls.append(item["download_url"])
-
         if not urls:
-            print(f"无下载链接 {fid[:8]}")
+            print(f"  无下载链接 {fid[:8]}")
             return [], ""
 
         cookies_str = "; ".join([f"{k}={v}" for k, v in r.cookies.items()])
-
-        expires = time.time() + 86400  # 24小时
+        expires = time.time() + 86400
 
         with FILES_LOCK:
             FILES_CACHE[fid] = {
@@ -163,21 +202,22 @@ def get_original_download(fid, share_fid_token):
                 "expires": expires,
                 "done": False
             }
-
+        print(f"  获取成功 {fid[:8]} ({len(urls)} 条链接)")
         return urls, cookies_str
-
     except Exception as e:
-        print(f"获取链接失败 {fid[:8]}: {e}")
+        print(f"  获取链接失败 {fid[:8]}: {str(e)}")
         return [], ""
 
 # ===== 删除转存文件 =====
 def cleanup_transferred_files():
+    if not COOKIE:
+        print("无 COOKIE，跳过清理")
+        return
+
     delete_url = "https://drive-pc.quark.cn/1/clouddrive/file/delete?pr=ucpro&fr=pc"
     with FILES_LOCK:
-        to_delete = []
-        for fid, info in list(FILES_CACHE.items()):
-            if not info.get("done") and info.get("expires", 0) < time.time() + 300:
-                to_delete.append((fid, info["local_fid"]))
+        to_delete = [(fid, info["local_fid"]) for fid, info in FILES_CACHE.items() 
+                     if not info.get("done") and info.get("expires", 0) < time.time() + 300]
 
     for fid, local_fid in to_delete:
         payload = {
@@ -193,20 +233,19 @@ def cleanup_transferred_files():
                         FILES_CACHE[fid]["done"] = True
                 print(f"删除成功 {local_fid[:8]}")
         except Exception as e:
-            print(f"删除失败 {local_fid[:8]}: {e}")
+            print(f"删除失败 {local_fid[:8]}: {str(e)}")
 
 # ===== 主逻辑 =====
 def main():
     all_apks = []
     download_results = []
 
-    print("\n=== 目录1 ===")
+    print("\n=== 扫描目录1 ===")
     apks1 = get_apks_in_dir(TARGET_DIRS[0])
-    print(f"找到 {len(apks1)} 个 APK")
     for f in apks1:
         name = f.get("file_name", "?")
         size = f.get("size", 0)
-        fid = f.get("fid")
+        fid = f.get("fid", "")
         sft = f.get("share_fid_token", "")
         print(f"  • {name:<50} {size:>12,} B")
         all_apks.append(f)
@@ -220,18 +259,17 @@ def main():
                 "urls": urls,
                 "cookies": ck
             })
-            print(f"    下载链接已获取 ({len(urls)} 条)")
+            print(f"    → 下载链接已获取 ({len(urls)} 条)")
 
-    print("\n=== 目录2 最新文件夹 ===")
+    print("\n=== 扫描目录2 - 最新子文件夹 ===")
     latest = get_latest_subfolder(TARGET_DIRS[1])
     if latest:
-        print(f"最新：{latest.get('file_name', '?')}")
+        print(f"最新文件夹：{latest.get('file_name', '?')}")
         apks2 = get_apks_in_dir(latest["fid"])
-        print(f"找到 {len(apks2)} 个 APK")
         for f in apks2:
             name = f.get("file_name", "?")
             size = f.get("size", 0)
-            fid = f.get("fid")
+            fid = f.get("fid", "")
             sft = f.get("share_fid_token", "")
             print(f"  • {name:<50} {size:>12,} B")
             all_apks.append(f)
@@ -245,19 +283,21 @@ def main():
                     "urls": urls,
                     "cookies": ck
                 })
-                print(f"    下载链接已获取 ({len(urls)} 条)")
+                print(f"    → 下载链接已获取 ({len(urls)} 条)")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     with open(f"apks_{ts}.json", "w", encoding="utf-8") as f:
         json.dump(all_apks, f, ensure_ascii=False, indent=2)
+    print(f"\n已保存 APK 列表到 apks_{ts}.json")
 
     if download_results:
         with open(f"downloads_{ts}.json", "w", encoding="utf-8") as f:
             json.dump(download_results, f, ensure_ascii=False, indent=2)
-        print(f"\n保存了 {len(download_results)} 条下载信息")
+        print(f"已保存 {len(download_results)} 条下载信息到 downloads_{ts}.json")
 
-    # 延迟 3 分钟后清理（避免 Actions 超时）
-    threading.Timer(180, cleanup_transferred_files).start()
+    # 清理（主线程执行，避免 Timer 在 Actions 中不可靠）
+    print("\n开始清理转存文件...")
+    cleanup_transferred_files()
 
 if __name__ == "__main__":
     main()
