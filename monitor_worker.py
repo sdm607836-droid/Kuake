@@ -177,18 +177,65 @@ def get_original_download(fid, share_fid_token=""):
     if not COOKIE:
         print(f" 无 COOKIE，跳过下载链接获取 {fid[:8]}")
         return [], ""
+
+    # 先检查缓存
     with FILES_LOCK:
         if fid in FILES_CACHE:
             c = FILES_CACHE[fid]
             if c.get("ori_urls") and c.get("expires", 0) > time.time():
                 print(f" 缓存命中 {fid[:8]}")
                 return c["ori_urls"], c.get("cookies", "")
+
+    print(f" 开始获取下载链接 {fid[:8]}...")
+
+    # 步骤1: 尝试直接从分享链接获取下载（不转存，优先级最高）
+    direct_url = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
+    direct_payload = {
+        "fids": [fid],
+        "pwd_id": PWD_ID,
+        "stoken": STOKEN,
+    }
+    print(f"  尝试直接下载 (不转存) {fid[:8]}...")
+    try:
+        r = requests.post(direct_url, json=direct_payload, headers=HEADERS, timeout=30)
+        print(f"    直接下载状态码: {r.status_code}")
+        if r.status_code == 200:
+            data = r.json()
+            urls = []
+            if "data" in data and isinstance(data["data"], list):
+                for item in data["data"]:
+                    if "download_url" in item and item["download_url"]:
+                        urls.append(item["download_url"])
+            if urls:
+                cookies_str = "; ".join([f"{k}={v}" for k, v in r.cookies.items()])
+                expires = time.time() + 86400
+                with FILES_LOCK:
+                    FILES_CACHE[fid] = {
+                        "ori_urls": urls,
+                        "cookies": cookies_str,
+                        "expires": expires,
+                        "done": False
+                    }
+                print(f"    直接下载成功 ({len(urls)} 条链接)")
+                return urls, cookies_str
+            else:
+                print("    直接下载无有效 url")
+        else:
+            print(f"    直接下载失败: {r.text[:200]}...")
+    except Exception as e:
+        print(f"    直接下载异常: {str(e)}")
+
+    # 步骤2: 如果直接下载失败，才尝试转存
+    print(f"  直接下载失败，尝试转存 {fid[:8]}...")
     local_fid = copy_file(fid, share_fid_token)
     if not local_fid:
+        print(f"  转存失败，无法继续 {fid[:8]}")
         return [], ""
+
+    # 步骤3: 用转存后的 local_fid 获取下载链接
     url = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
     payload = {"fids": [local_fid]}
-    print(f" 请求下载链接 {fid[:8]}...")
+    print(f"  请求转码下载链接 {fid[:8]} (local_fid={local_fid[:8]})...")
     try:
         r = requests.post(url, json=payload, headers=HEADERS, timeout=60)
         r.raise_for_status()
@@ -199,7 +246,7 @@ def get_original_download(fid, share_fid_token=""):
                 if "download_url" in item and item["download_url"]:
                     urls.append(item["download_url"])
         if not urls:
-            print(f" 无下载链接 {fid[:8]}")
+            print(f"  无下载链接 {fid[:8]}")
             return [], ""
         cookies_str = "; ".join([f"{k}={v}" for k, v in r.cookies.items()])
         expires = time.time() + 86400
@@ -211,10 +258,10 @@ def get_original_download(fid, share_fid_token=""):
                 "expires": expires,
                 "done": False
             }
-        print(f" 获取成功 {fid[:8]} ({len(urls)} 条链接)")
+        print(f"  获取成功 {fid[:8]} ({len(urls)} 条链接)")
         return urls, cookies_str
     except Exception as e:
-        print(f" 获取链接失败 {fid[:8]}: {str(e)}")
+        print(f"  获取链接失败 {fid[:8]}: {str(e)}")
         return [], ""
 
 # ===== 删除转存文件 =====
