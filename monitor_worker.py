@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 import threading
 import re
-from tqdm import tqdm
+from tqdm import tqdm  # 进度条
 
 # ===== 配置区 =====
 WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
@@ -65,7 +65,7 @@ HEADERS = {
 }
 
 def test_personal_drive():
-    test_url = "https://drive-pc.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid=0&_fetch_total=1&_size=10"
+    test_url = "https://drive-pc.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid=0&*fetch_total=1&*size=10"
     print("\n=== 测试个人网盘访问 ===")
     try:
         r = requests.get(test_url, headers=HEADERS, timeout=20)
@@ -87,8 +87,8 @@ def fetch_page(pdir_fid, page=1):
                 "pwd_id": PWD_ID,
                 "stoken": STOKEN,
                 "pdir_fid": pdir_fid,
-                "_page": page,
-                "_size": PAGE_SIZE,
+                "*page": page,
+                "*size": PAGE_SIZE,
                 "ver": 2,
                 "pr": "ucpro",
                 "fr": "h5",
@@ -181,13 +181,16 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
     if not COOKIE:
         print(f" 无 COOKIE，跳过 {fid[:8]}")
         return [], ""
+
     with FILES_LOCK:
         if fid in FILES_CACHE:
             c = FILES_CACHE[fid]
             if c.get("ori_urls") and c.get("expires", 0) > time.time():
                 print(f" 缓存命中 {fid[:8]}")
                 return c["ori_urls"], c.get("cookies", "")
+
     print(f" 开始获取链接 {fid[:8]}...")
+
     direct_url = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
     direct_payload = {
         "fids": [fid],
@@ -216,10 +219,13 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                         "done": False
                     }
                 print(f" 直接下载成功 ({len(urls)} 条链接)")
+
+                # 自动下载文件（进度条）
                 file_url = urls[0]
                 if is_txt:
                     filename = f"Version-{'Pro' if 'Pro版' in name else 'OK'}.txt"
                 else:
+                    # 重命名逻辑
                     filename = name
                     for pattern, new_name in PRO_RENAME_MAP.items():
                         if re.search(pattern, name):
@@ -230,9 +236,10 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                             filename = new_name
                             break
                     if filename == name:
-                        filename = name.replace(".apk", "").replace(" ", "_").replace("/", "_") + ".apk"
+                        filename = name.replace(".apk", "").replace(" ", "*").replace("/", "*") + ".apk"
                     else:
                         print(f" 重命名: {name} → {filename}")
+
                 print(f" 开始下载: {filename} ({size:,} bytes)")
                 try:
                     dl_headers = HEADERS.copy()
@@ -255,6 +262,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                     print(f" 下载完成: {filename} ({file_size_mb:.2f} MB)")
                 except Exception as e:
                     print(f" 下载失败 {filename}: {str(e)}")
+
                 return urls, cookies_str
             else:
                 print(" 直接下载无有效 url")
@@ -262,6 +270,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
             print(f" 直接下载失败: {r.text[:200]}...")
     except Exception as e:
         print(f" 直接下载异常: {str(e)}")
+
     return [], ""
 
 def cleanup_transferred_files():
@@ -290,11 +299,12 @@ def cleanup_transferred_files():
 
 def main():
     test_personal_drive()
+
     all_apks = []
     download_results = []
     downloaded_files = []  # 用于上传的文件列表
 
-    # 清空旧文件
+    # 清空旧文件（避免重复上传旧版）
     print("\n清空旧 APK 和 TXT 文件...")
     for file in os.listdir():
         if file.endswith((".apk", ".txt")):
@@ -304,7 +314,7 @@ def main():
             except:
                 pass
 
-    # 目录1: OK Pro版 - 完整循环
+    # 目录1: OK Pro版
     print("\n=== 扫描目录1 (OK Pro版) ===")
     apks1, txts1 = get_apks_in_dir(TARGET_DIRS[0])
     for f in txts1:
@@ -321,13 +331,15 @@ def main():
             print(f" 已保存 Pro TXT: {filename}")
             downloaded_files.append(filename)
 
-    for f in apks1:  # 完整循环
-        name = f.get("file_name", "?")
-        size = f.get("size", 0)
-        fid = f.get("fid", "")
-        sft = f.get("share_fid_token", "")
-        print(f" • {name:<50} {size:>12,} B")
-        all_apks.append(f)
+    # 只下载一个最小 APK 测试
+    for f in apks1:
+        smallest_apk = min(apks1, key=lambda x: x.get("size", 0))
+        name = smallest_apk.get("file_name", "?")
+        size = smallest_apk.get("size", 0)
+        fid = smallest_apk.get("fid", "")
+        sft = smallest_apk.get("share_fid_token", "")
+        print(f" • 测试下载最小 APK: {name:<50} {size:>12,} B")
+        all_apks.append(smallest_apk)
         urls, ck = get_original_download(fid, sft, name, size)
         if urls:
             download_results.append({
@@ -338,44 +350,47 @@ def main():
                 "cookies": ck
             })
             print(f" → 下载链接已获取 ({len(urls)} 条)")
+            base_name = name.replace(".apk", "").replace(" ", "*").replace("/", "*")
+            apk_filename = base_name + ".apk"
+            if os.path.exists(apk_filename):
+                downloaded_files.append(apk_filename)
 
-    # 目录2: OK 标准版 - 完整循环
-    print("\n=== 扫描目录2 (OK 标准版) - 最新子文件夹 ===")
-    latest = get_latest_subfolder(TARGET_DIRS[1])
-    if latest:
-        print(f"最新文件夹：{latest.get('file_name', '?')}")
-        apks2, txts2 = get_apks_in_dir(latest["fid"])
-        for f in txts2:
-            name = f.get("file_name", "?")
-            size = f.get("size", 0)
-            fid = f.get("fid", "")
-            sft = f.get("share_fid_token", "")
-            print(f" • TXT: {name:<50} {size:>12,} B")
-            urls, ck = get_original_download(fid, sft, name, size, is_txt=True)
-            if urls:
-                filename = "Version-OK.txt"
-                with open(filename, 'w', encoding="utf-8") as tf:
-                    tf.write("从 " + name + " 提取的版本信息\n\n" + "（内容已下载）")
-                print(f" 已保存 OK TXT: {filename}")
-                downloaded_files.append(filename)
-
-        for f in apks2:  # 完整循环
-            name = f.get("file_name", "?")
-            size = f.get("size", 0)
-            fid = f.get("fid", "")
-            sft = f.get("share_fid_token", "")
-            print(f" • {name:<50} {size:>12,} B")
-            all_apks.append(f)
-            urls, ck = get_original_download(fid, sft, name, size)
-            if urls:
-                download_results.append({
-                    "name": name,
-                    "size": size,
-                    "fid": fid,
-                    "urls": urls,
-                    "cookies": ck
-                })
-                print(f" → 下载链接已获取 ({len(urls)} 条)")
+    # 目录2: OK 标准版（测试期间注释掉，成功后再放开）
+     print("\n=== 扫描目录2 (OK 标准版) - 最新子文件夹 ===")
+     latest = get_latest_subfolder(TARGET_DIRS[1])
+     if latest:
+         print(f"最新文件夹：{latest.get('file_name', '?')}")
+         apks2, txts2 = get_apks_in_dir(latest["fid"])
+         for f in txts2:
+             name = f.get("file_name", "?")
+             size = f.get("size", 0)
+             fid = f.get("fid", "")
+             sft = f.get("share_fid_token", "")
+             print(f" • TXT: {name:<50} {size:>12,} B")
+             urls, ck = get_original_download(fid, sft, name, size, is_txt=True)
+             if urls:
+                 filename = "Version-OK.txt"
+                 with open(filename, 'w', encoding="utf-8") as tf:
+                     tf.write("从 " + name + " 提取的版本信息\n\n" + "（内容已下载）")
+                 print(f" 已保存 OK TXT: {filename}")
+                 downloaded_files.append(filename)
+         for f in apks2:
+             name = f.get("file_name", "?")
+             size = f.get("size", 0)
+             fid = f.get("fid", "")
+             sft = f.get("share_fid_token", "")
+             print(f" • {name:<50} {size:>12,} B")
+             all_apks.append(f)
+             urls, ck = get_original_download(fid, sft, name, size)
+             if urls:
+                 download_results.append({
+                     "name": name,
+                     "size": size,
+                     "fid": fid,
+                     "urls": urls,
+                     "cookies": ck
+                 })
+                 print(f" → 下载链接已获取 ({len(urls)} 条)")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     with open(f"apks_{ts}.json", "w", encoding="utf-8") as f:
