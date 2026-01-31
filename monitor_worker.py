@@ -18,7 +18,7 @@ TARGET_DIRS = [
 # 调试：立即打印环境变量状态（最重要的一步）
 print("=== 调试信息 ===")
 STOKEN = os.getenv("QUARK_STOKEN")
-COOKIE = os.getenv("MY_QUARK_COOKIE")
+COOKIE = os.getenv("QUARK_COOKIE")
 
 print(f"QUARK_STOKEN 是否存在: {'是' if STOKEN else '否'}")
 if STOKEN:
