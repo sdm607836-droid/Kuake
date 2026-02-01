@@ -323,6 +323,10 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                     try:
                         dl_headers = HEADERS.copy()
                         dl_headers["Cookie"] = cookies_str
+                        dl_headers["Referer"] = "https://drive-pc.quark.cn/"
+                        dl_headers["Accept"] = "*/*"
+                        dl_headers["Accept-Encoding"] = "identity"
+                        dl_headers["Range"] = "bytes=0-"
                         dl_r = requests.get(urls[0], headers=dl_headers, stream=True, timeout=600)
                         dl_r.raise_for_status()
                         total_size = int(dl_r.headers.get('content-length', 0))
