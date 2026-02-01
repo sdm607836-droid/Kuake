@@ -7,65 +7,9 @@ import threading
 import re
 from tqdm import tqdm
 
-# ===== Fongmi 配置（必须改成你的 ID） =====
-FONGMI_ID = "335400"  # ← 这里填你授权后得到的 ID！！！
-FONGMI_BASE = "https://t4a.fongmi.leuse.top/auth/quark"
-
-# ===== 获取最新 stoken（优先 Fongmi，fallback 到 Secrets） =====
-def get_latest_stoken():
-    print("正在从 Fongmi 获取最新 stoken...")
-    try:
-        url = f"{FONGMI_BASE}?id={FONGMI_ID}&act=get"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("code") == 0:
-                stoken = data.get("data", {}).get("stoken")
-                cookie = data.get("data", {}).get("cookie")
-                if stoken:
-                    print(f"从 Fongmi 获取 stoken 成功: {stoken[:10]}...")
-                    # 如果 Fongmi 返回了新 cookie，更新全局 COOKIE
-                    if cookie:
-                        global COOKIE
-                        COOKIE = cookie
-                        print("同时更新 COOKIE")
-                    return stoken
-            else:
-                print("Fongmi 返回错误:", data.get("msg"))
-        else:
-            print("Fongmi 请求失败:", r.status_code)
-    except Exception as e:
-        print("Fongmi 获取失败:", str(e))
-
-    # fallback 到 Secrets
-    stoken = os.getenv("QUARK_STOKEN")
-    if stoken:
-        print("使用 GitHub Secrets 的 stoken")
-        return stoken
-    print("❌ 所有方式都无法获取 stoken")
-    return None
-
-# ===== 刷新 stoken（可选，在 main 开头调用） =====
-def refresh_stoken():
-    try:
-        url = f"{FONGMI_BASE}?id={FONGMI_ID}&act=refresh"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("code") == 0:
-                new_stoken = data.get("data", {}).get("stoken")
-                if new_stoken:
-                    print(f"stoken 刷新成功: {new_stoken[:10]}...")
-                    global STOKEN
-                    STOKEN = new_stoken
-                    return True
-    except Exception as e:
-        print("stoken 刷新失败:", str(e))
-    return False
-
 # ===== 配置区 =====
 WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
-PWD_ID = "cb0ee2b9ac64"
+PWD_ID = "cb0ee2b9ac64"  # 你的分享 pwd_id
 PAGE_SIZE = 50
 TARGET_DIRS = [
     "8d6dce95581c49f29183380d3805e9b5",  # OK Pro版
@@ -89,18 +33,70 @@ OK_RENAME_MAP = {
     r"leanback-arm64_v8a-.*\.apk": "leanback-arm64_v8a-ok.apk",
 }
 
+# ===== 自动获取/刷新 stoken（使用官方接口） =====
+def get_share_token(pwd_id=PWD_ID, passcode=""):
+    """调用夸克官方 /share/sharepage/token 接口获取最新 stoken"""
+    print("正在通过官方接口获取/刷新 stoken...")
+    url = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch",
+        "Referer": "https://drive.quark.cn/",
+        "Content-Type": "application/json",
+        "Cookie": COOKIE,  # 必须是有效的登录 cookie
+    }
+    payload = {
+        "pwd_id": pwd_id,
+        "passcode": passcode,  # 如果分享有密码，填在这里；无密码可为空
+    }
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
+        print(f"官方 token 接口状态码: {r.status_code}")
+        print(f"官方 token 接口响应: {r.text[:500]}")  # 调试用
+
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("code") == 0:
+                stoken = data.get("data", {}).get("stoken")
+                name = data.get("data", {}).get("title")
+                if stoken:
+                    print(f"获取 stoken 成功: {stoken[:10]}...")
+                    print(f"分享标题: {name}")
+                    return stoken
+            print("官方 token 接口返回错误:", data.get("msg", "未知"))
+        else:
+            print("官方 token 接口请求失败:", r.status_code)
+    except Exception as e:
+        print("官方 token 接口异常:", str(e))
+    return None
+
+# ===== 获取最新 stoken（优先官方接口刷新） =====
+def get_latest_stoken():
+    # 先尝试官方接口刷新 stoken
+    stoken = get_share_token()
+    if stoken:
+        return stoken
+
+    # fallback 到 Secrets 中的 QUARK_STOKEN
+    stoken = os.getenv("QUARK_STOKEN")
+    if stoken:
+        print("使用 GitHub Secrets 的 stoken:", stoken[:10] + "...")
+        return stoken
+    print("❌ 所有方式都无法获取有效 stoken")
+    return None
+
 # 调试信息
 print("=== 调试信息 ===")
-STOKEN = get_latest_stoken()  # 优先 Fongmi
 COOKIE = os.getenv("QUARK_COOKIE")
+STOKEN = get_latest_stoken()  # 启动时自动刷新/获取
 print(f"QUARK_COOKIE 是否存在: {'是' if COOKIE else '否'}")
 if COOKIE:
     print(f"QUARK_COOKIE 长度: {len(COOKIE)}")
     print(f"QUARK_COOKIE 前20字符: {COOKIE[:20]}...")
+print(f"最终使用的 stoken: {STOKEN[:10] + '...' if STOKEN else '无'}")
 print("=== 调试结束 ===\n")
 
 if not STOKEN:
-    print("❌ 缺少 QUARK_STOKEN，无法继续")
+    print("❌ 缺少有效 stoken，无法继续")
     exit(1)
 
 if not COOKIE:
@@ -277,10 +273,9 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                     }
                 print(f" 直接下载成功 ({len(urls)} 条链接)")
 
-                # 文件名处理
+                # 文件名处理 + 下载
                 if is_txt:
                     filename = f"Version-{'Pro' if 'Pro版' in name else 'OK'}.txt"
-                    # 保存 TXT 内容
                     print(f" 开始下载 TXT: {filename}")
                     try:
                         dl_headers = HEADERS.copy()
@@ -406,8 +401,7 @@ def cleanup_transferred_files():
 
 # ===== 主逻辑 =====
 def main():
-    refresh_stoken()  # 尝试刷新 stoken
-    test_personal_drive()
+    test_personal_drive()  # 先测试 cookie 有效性
 
     all_apks = []
     download_results = []
@@ -458,7 +452,7 @@ def main():
             })
             print(f" → 下载链接已获取 ({len(urls)} 条)")
 
-    # 目录2: OK 标准版
+    # 目录2: OK 标准版 - 最新子文件夹
     print("\n=== 扫描目录2 (OK 标准版) - 最新子文件夹 ===")
     latest = get_latest_subfolder(TARGET_DIRS[1])
     if latest:
