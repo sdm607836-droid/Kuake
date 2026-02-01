@@ -1,9 +1,9 @@
 name: Monitor Quark Share & Upload to Release
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 手动触发
   # schedule:
-  #   - cron: '0 */6 * * *'   # ⛔ 已关闭定时执行，仅保留手动触发
+  #   - cron: '0 */6 * * *'  # ⛔ 已关闭定时执行，仅保留手动触发
 
 jobs:
   monitor-and-upload:
@@ -39,20 +39,17 @@ jobs:
         run: |
           RELEASE_TAG="latest"
           RELEASE_TITLE="Latest APK Updates - $(date +'%Y-%m-%d %H:%M')"
-          RELEASE_NOTES="自动从夸克分享监控更新
-生成时间: $(date +'%Y-%m-%d %H:%M')
-包含文件: $(ls *.apk 2>/dev/null || echo '无新文件')"
+          RELEASE_NOTES="自动从夸克分享监控更新\n生成时间: $(date +'%Y-%m-%d %H:%M')\n包含文件: $(ls *.apk 2>/dev/null || echo '无新文件')"
 
           echo "处理 Release: $RELEASE_TAG"
 
-          # 检查 Release 是否存在
+          # 检查是否存在
           if gh release view $RELEASE_TAG >/dev/null 2>&1; then
             echo "已存在，正在上传/覆盖..."
-            gh release upload $RELEASE_TAG *.apk --clobber --repo $GITHUB_REPOSITORY || echo "无 APK 或上传失败"
+            gh release upload $RELEASE_TAG *.apk --clobber --repo $GITHUB_REPOSITORY || echo "上传失败（可能无 APK 文件）"
           else
             echo "不存在，正在创建..."
             gh release create $RELEASE_TAG *.apk \
               --title "$RELEASE_TITLE" \
               --notes "$RELEASE_NOTES" \
               --repo $GITHUB_REPOSITORY || echo "创建失败，请检查 GH_TOKEN"
-          fi
