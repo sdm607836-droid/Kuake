@@ -40,8 +40,8 @@ jobs:
           RELEASE_TITLE="Latest APK Updates - $(date +'%Y-%m-%d %H:%M')"
           APK_FILES=$(ls *.apk 2>/dev/null || echo "无新文件")
           RELEASE_NOTES="自动从夸克分享监控更新
-生成时间: $(date +'%Y-%m-%d %H:%M')
-包含文件: $APK_FILES"
+          生成时间: $(date +'%Y-%m-%d %H:%M')
+          包含文件: $APK_FILES"
 
           echo "处理 Release: $RELEASE_TAG"
 
