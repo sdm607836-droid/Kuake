@@ -11,9 +11,12 @@ from tqdm import tqdm
 FONGMI_ID = "335400"  # 如果 Fongmi 无效，可注释掉
 FONGMI_BASE = "https://t4a.fongmi.leuse.top/auth/quark"
 
-# ===== 获取最新 stoken（官方接口优先） =====
-def get_share_token(pwd_id=PWD_ID, passcode=""):
+# ===== 自动获取/刷新 stoken（官方接口方式） =====
+def get_share_token(pwd_id=None, passcode=""):
+    """调用夸克官方 /share/sharepage/token 接口获取最新 stoken"""
     print("正在通过官方接口获取/刷新 stoken...")
+    if pwd_id is None:
+        pwd_id = PWD_ID  # 使用全局配置的 PWD_ID
     url = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch",
