@@ -417,6 +417,32 @@ def cleanup_transferred_files():
 def main():
     test_personal_drive()  # 先测试 cookie 有效性
 
+    # 先完整扫描两个目录，打印所有文件信息
+    print("\n=== 先扫描所有目录（不下载） ===")
+
+    print("\n扫描目录1 (OK Pro版)...")
+    apks1, txts1 = get_apks_in_dir(TARGET_DIRS[0])
+    print(f"OK Pro版找到 {len(apks1)} 个 APK, {len(txts1)} 个 TXT")
+    for f in apks1:
+        print(f"  Pro APK: {f.get('file_name')} ({f.get('size', 0):,} B)")
+    for f in txts1:
+        print(f"  Pro TXT: {f.get('file_name')} ({f.get('size', 0):,} B)")
+
+    print("\n扫描目录2 (OK 标准版) - 最新子文件夹...")
+    latest = get_latest_subfolder(TARGET_DIRS[1])
+    if latest:
+        print(f"最新文件夹：{latest.get('file_name', '?')}")
+        apks2, txts2 = get_apks_in_dir(latest["fid"])
+        print(f"OK 标准版找到 {len(apks2)} 个 APK, {len(txts2)} 个 TXT")
+        for f in apks2:
+            print(f"  标准 APK: {f.get('file_name')} ({f.get('size', 0):,} B)")
+        for f in txts2:
+            print(f"  标准 TXT: {f.get('file_name')} ({f.get('size', 0):,} B)")
+    else:
+        print("标准版无最新子文件夹")
+
+    print("\n=== 扫描完成，开始下载处理 ===\n")
+
     all_apks = []
     download_results = []
     downloaded_files = []
@@ -431,9 +457,8 @@ def main():
             except:
                 pass
 
-    # 目录1: OK Pro版
-    print("\n=== 扫描目录1 (OK Pro版) ===")
-    apks1, txts1 = get_apks_in_dir(TARGET_DIRS[0])
+    # 现在处理 Pro 版
+    print("\n=== 处理目录1 (OK Pro版) ===")
     for f in txts1:
         name = f.get("file_name", "?")
         size = f.get("size", 0)
@@ -466,12 +491,9 @@ def main():
             })
             print(f" → 下载链接已获取 ({len(urls)} 条)")
 
-    # 目录2: OK 标准版 - 最新子文件夹
-    print("\n=== 扫描目录2 (OK 标准版) - 最新子文件夹 ===")
-    latest = get_latest_subfolder(TARGET_DIRS[1])
+    # 处理标准版
     if latest:
-        print(f"最新文件夹：{latest.get('file_name', '?')}")
-        apks2, txts2 = get_apks_in_dir(latest["fid"])
+        print("\n=== 处理目录2 (OK 标准版) ===")
         for f in txts2:
             name = f.get("file_name", "?")
             size = f.get("size", 0)
