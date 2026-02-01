@@ -3,9 +3,8 @@ import json
 import requests
 import time
 from datetime import datetime
-import threading
+from tqdm import tqdm
 import re
-from tqdm import tqdm  # 进度条
 
 # ===== 配置区 =====
 WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
@@ -34,27 +33,14 @@ OK_RENAME_MAP = {
 }
 
 # ===== 环境变量 =====
-STOKEN = os.getenv("QUARK_STOKEN")
 COOKIE = os.getenv("QUARK_COOKIE")
-
-print("=== 调试信息 ===")
-print(f"QUARK_COOKIE 是否存在: {'是' if COOKIE else '否'}")
-print(f"QUARK_STOKEN 是否存在: {'是' if STOKEN else '否'}")
-print("==================\n")
-
-if not STOKEN:
-    print("❌ 缺少 QUARK_STOKEN，无法继续")
-    exit(1)
-
-FILES_LOCK = threading.Lock()
-FILES_CACHE = {}
+STOKEN = os.getenv("QUARK_STOKEN")  # 这个可以不用，因为 Worker 会生成 stoken
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch",
+                  "(KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36",
     "Referer": "https://drive.quark.cn/",
     "Content-Type": "application/json",
-    "Cookie": COOKIE or "",
 }
 
 # ===== 工具函数 =====
@@ -67,66 +53,55 @@ def rename_file(name):
             return new_name
     return name.replace(".apk", "").replace(" ", "_").replace("/", "_") + ".apk"
 
-def fetch_page(pdir_fid, page=1):
+def fetch_files_from_worker(pdir_fid, page=1):
+    """调用 Worker 获取文件列表，包括 share_fid_token"""
     try:
         r = requests.post(
             WORKER_URL,
             json={
                 "pwd_id": PWD_ID,
-                "stoken": STOKEN,
                 "pdir_fid": pdir_fid,
-                "_page": page,
-                "_size": PAGE_SIZE,
-                "ver": 2,
-                "pr": "ucpro",
-                "fr": "h5",
+                "page": page,
+                "size": PAGE_SIZE,
             },
-            timeout=60,
+            headers=HEADERS,
+            timeout=60
         )
         r.raise_for_status()
         data = r.json()
-        list_data = data.get("data", {}).get("detail_info", {}).get("list", [])
-        return list_data
+        files = data.get("files", [])
+        return files
     except Exception as e:
         print(f"列表请求失败 {pdir_fid[:8]}: {e}")
         return []
 
-def get_apks_in_dir(fid):
-    files = []
+def get_all_files(fid):
+    """分页获取目录内所有文件"""
+    all_files = []
     page = 1
     while True:
-        page_data = fetch_page(fid, page)
-        if not page_data:
+        files = fetch_files_from_worker(fid, page)
+        if not files:
             break
-        files.extend(page_data)
-        if len(page_data) < PAGE_SIZE:
+        all_files.extend(files)
+        if len(files) < PAGE_SIZE:
             break
         page += 1
-    apks = [f for f in files if not f.get("dir") and f.get("file_type") == 1 and f.get("file_name", "").endswith(".apk")]
-    txts = [f for f in files if not f.get("dir") and f.get("file_name", "").endswith(".txt")]
+    apks = [f for f in all_files if f["file_type"] == 1 and f["file_name"].endswith(".apk")]
+    txts = [f for f in all_files if f["file_type"] == 1 and f["file_name"].endswith(".txt")]
     print(f"目录 {fid[:8]} → APK {len(apks)} / TXT {len(txts)}")
     return apks, txts
 
-def get_download_url(fid):
-    url = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
-    payload = {"fids": [fid], "pwd_id": PWD_ID, "stoken": STOKEN}
+def download_file(fid, fid_token, name):
+    """下载文件"""
+    download_url = f"https://pan.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=h5&fid={fid}&fid_token={fid_token}"
+    final_name = rename_file(name)
     try:
-        r = requests.post(url, json=payload, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        urls = [item["download_url"] for item in data.get("data", []) if item.get("download_url")]
-        return urls
-    except Exception as e:
-        print(f"获取下载链接失败 {fid}: {e}")
-        return []
-
-def download_file(url, filename):
-    try:
-        r = requests.get(url, headers=HEADERS, stream=True, timeout=300)
+        r = requests.get(download_url, headers=HEADERS, stream=True, timeout=300)
         r.raise_for_status()
         total_size = int(r.headers.get('content-length', 0))
-        with open(filename, 'wb') as f, tqdm(
-            desc=filename,
+        with open(final_name, 'wb') as f, tqdm(
+            desc=final_name,
             total=total_size,
             unit='B',
             unit_scale=True,
@@ -136,39 +111,35 @@ def download_file(url, filename):
                 if chunk:
                     f.write(chunk)
                     pbar.update(len(chunk))
-        print(f"✅ 下载完成 {filename}")
-        return True
+        print(f"✅ 下载完成 {final_name}")
+        return final_name
     except Exception as e:
-        print(f"❌ 下载失败 {filename}: {e}")
-        return False
+        print(f"❌ 下载失败 {final_name}: {e}")
+        return None
 
 # ===== 主流程 =====
 def main():
-    # 清理旧文件
     print("清理旧文件...")
     for f in os.listdir():
         if f.endswith((".apk", ".txt")):
-            try:
-                os.remove(f)
+            try: os.remove(f)
             except: pass
 
     downloaded_files = []
 
-    for dir_idx, fid in enumerate(TARGET_DIRS):
-        print(f"\n=== {'OK Pro版' if dir_idx==0 else 'OK 标准版'} ===")
-        apks, txts = get_apks_in_dir(fid)
+    for idx, fid in enumerate(TARGET_DIRS):
+        print(f"\n=== {'OK Pro版' if idx==0 else 'OK 标准版'} ===")
+        apks, txts = get_all_files(fid)
         for f in txts + apks:
-            name = f.get("file_name")
-            fid_ = f.get("fid")
-            urls = get_download_url(fid_)
-            if not urls:
-                print(f"❌ 没有下载链接 {name}")
+            fid_ = f["fid"]
+            fid_token = f.get("share_fid_token")
+            if not fid_token:
+                print(f"❌ 没有下载链接 {f['file_name']}")
                 continue
-            final_name = rename_file(name)
-            if download_file(urls[0], final_name):
-                downloaded_files.append(final_name)
+            result = download_file(fid_, fid_token, f["file_name"])
+            if result:
+                downloaded_files.append(result)
 
-    # 保存下载信息
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     with open(f"downloads_{ts}.json", "w", encoding="utf-8") as f:
         json.dump(downloaded_files, f, ensure_ascii=False, indent=2)
