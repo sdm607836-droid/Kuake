@@ -7,16 +7,66 @@ import threading
 import re
 from tqdm import tqdm
 
-# ===== Fongmi 配置（可选，如果你还想保留） =====
-FONGMI_ID = "335400"  # 如果 Fongmi 无效，可注释掉
-FONGMI_BASE = "https://t4a.fongmi.leuse.top/auth/quark"
+# ===== GitHub 配置（用于检查重复文件） =====
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # workflow 自动注入
+REPO_OWNER = "你的用户名"  # ← 替换成你的 GitHub 用户名
+REPO_NAME = "你的仓库名"   # ← 替换成你的仓库名
+TAG_NAME = "latest"         # 如果用 tag，改成对应 tag 名
 
-# ===== 自动获取/刷新 stoken（官方接口方式） =====
+# ===== 获取当前 Release 已存在的文件 =====
+def get_existing_release_files():
+    if not GITHUB_TOKEN:
+        print("⚠️ 缺少 GITHUB_TOKEN，无法检查重复文件，将全部下载")
+        return set()
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/tags/{TAG_NAME}"
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"token {GITHUB_TOKEN}",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            assets = data.get("assets", [])
+            existing = {asset["name"].lower() for asset in assets}
+            print(f"当前 Release 已存在 {len(existing)} 个文件")
+            return existing
+        print(f"获取 Release Assets 失败: {r.status_code} - {r.text[:200]}")
+    except Exception as e:
+        print(f"获取 Release Assets 异常: {str(e)}")
+    return set()
+
+EXISTING_FILES = get_existing_release_files()
+
+# ===== 配置区 =====
+WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
+PWD_ID = "cb0ee2b9ac64"
+PAGE_SIZE = 50
+TARGET_DIRS = [
+    "8d6dce95581c49f29183380d3805e9b5",  # OK Pro版
+    "f0c75c96e96e4310b96383b4b22040e3",  # OK 标准版
+]
+
+PRO_RENAME_MAP = {
+    r"OK影视Pro-电视版-32位.*\.apk": "leanback-arm64_v7a-pro.apk",
+    r"OK影视Pro-电视版-64位.*\.apk": "leanback-arm64_v8a-pro.apk",
+    r"OK影视Pro-手机版.*(?<!模拟器)\.apk": "mobile-arm64_v8a-pro.apk",
+    r"OK影视Pro-手机版.* - 模拟器\.apk": "mobile-arm64_v7a-pro.apk",
+}
+
+OK_RENAME_MAP = {
+    r"海信专版-OK影视.*\.apk": "hisense-tv-customized.apk",
+    r"mobile-armeabi_v7a.*\.apk": "mobile-arm64_v7a-ok.apk",
+    r"mobile-arm64_v8a.*\.apk": "mobile-arm64_v8a-ok.apk",
+    r"leanback-armeabi_v7a.*\.apk": "leanback-arm64_v7a-ok.apk",
+    r"leanback-arm64_v8a.*\.apk": "leanback-arm64_v8a-ok.apk",
+}
+
+# ===== 自动获取/刷新 stoken =====
 def get_share_token(pwd_id=None, passcode=""):
-    """调用夸克官方 /share/sharepage/token 接口获取最新 stoken"""
-    print("正在通过官方接口获取/刷新 stoken...")
     if pwd_id is None:
-        pwd_id = PWD_ID  # 使用全局配置的 PWD_ID
+        pwd_id = PWD_ID
+    print("正在通过官方接口获取/刷新 stoken...")
     url = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch",
@@ -32,7 +82,6 @@ def get_share_token(pwd_id=None, passcode=""):
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         print(f"官方 token 接口状态码: {r.status_code}")
         print(f"官方 token 接口响应: {r.text[:500]}")
-
         if r.status_code == 200:
             data = r.json()
             if data.get("code") == 0:
@@ -50,68 +99,18 @@ def get_share_token(pwd_id=None, passcode=""):
     return None
 
 def get_latest_stoken():
+    print("强制尝试刷新 stoken...")
     stoken = get_share_token()
     if stoken:
         return stoken
-
     stoken = os.getenv("QUARK_STOKEN")
     if stoken:
-        print("使用 GitHub Secrets 的 stoken:", stoken[:10] + "...")
+        print("使用 Secrets 中的 stoken (可能已过期):", stoken[:10] + "...")
         return stoken
-    print("❌ 无法获取有效 stoken")
+    print("❌ 无法获取 stoken")
     return None
 
-# ===== 获取当前 Release 已存在的文件列表 =====
-def get_existing_release_files(repo_owner, repo_name, tag_name):
-    """通过 GitHub API 获取指定 Release 的 Assets 列表"""
-    token = os.getenv("GITHUB_TOKEN")
-    if not token:
-        print("⚠️ 缺少 GITHUB_TOKEN，无法检查重复文件，将全部下载")
-        return set()
-
-    url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases/tags/{tag_name}"
-    headers = {
-        "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"token {token}",
-    }
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            assets = data.get("assets", [])
-            existing_files = {asset["name"] for asset in assets}
-            print(f"当前 Release 已存在 {len(existing_files)} 个文件: {', '.join(existing_files)}")
-            return existing_files
-        else:
-            print(f"获取 Release Assets 失败: {r.status_code} - {r.text[:200]}")
-    except Exception as e:
-        print(f"获取 Release Assets 异常: {str(e)}")
-    return set()
-
-# ===== 配置区 =====
-WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
-PWD_ID = "cb0ee2b9ac64"
-PAGE_SIZE = 50
-TARGET_DIRS = [
-    "8d6dce95581c49f29183380d3805e9b5",  # OK Pro版
-    "f0c75c96e96e4310b96383b4b22040e3",  # OK 标准版
-]
-
-PRO_RENAME_MAP = {
-    r"OK影视Pro-电视版-32位-.*\.apk": "leanback-arm64_v7a-pro.apk",
-    r"OK影视Pro-电视版-64位-.*\.apk": "leanback-arm64_v8a-pro.apk",
-    r"OK影视Pro-手机版-.*(?<!模拟器)\.apk": "mobile-arm64_v8a-pro.apk",
-    r"OK影视Pro-手机版-.* - 模拟器\.apk": "mobile-arm64_v7a-pro.apk",
-}
-
-OK_RENAME_MAP = {
-    r"海信专版-OK影视-.*\.apk": "hisense-tv-customized.apk",
-    r"mobile-armeabi_v7a-.*\.apk": "mobile-arm64_v7a-ok.apk",
-    r"mobile-arm64_v8a-.*\.apk": "mobile-arm64_v8a-ok.apk",
-    r"leanback-armeabi_v7a-.*\.apk": "leanback-arm64_v7a-ok.apk",
-    r"leanback-arm64_v8a-.*\.apk": "leanback-arm64_v8a-ok.apk",
-}
-
+# 调试信息
 print("=== 调试信息 ===")
 COOKIE = os.getenv("QUARK_COOKIE")
 STOKEN = get_latest_stoken()
@@ -123,7 +122,7 @@ print(f"最终 stoken: {STOKEN[:10] + '...' if STOKEN else '无'}")
 print("=== 调试结束 ===\n")
 
 if not STOKEN:
-    print("❌ 缺少 QUARK_STOKEN，无法继续")
+    print("❌ 缺少有效 stoken，无法继续")
     exit(1)
 
 if not COOKIE:
@@ -138,12 +137,6 @@ HEADERS = {
     "Content-Type": "application/json",
     "Cookie": COOKIE,
 }
-
-# 获取当前 Release 已存在的文件（防止重复上传）
-REPO_OWNER = "你的GitHub用户名"  # ← 替换成你的用户名
-REPO_NAME = "你的仓库名"         # ← 替换成你的仓库名
-TAG_NAME = "latest"              # ← 如果是 tag 名，可改成动态获取
-EXISTING_FILES = get_existing_release_files(REPO_OWNER, REPO_NAME, TAG_NAME)
 
 def test_personal_drive():
     test_url = "https://drive-pc.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid=0&_fetch_total=1&_size=10"
@@ -180,6 +173,8 @@ def fetch_page(pdir_fid, page=1):
         data = r.json()
         list_data = data.get("data", {}).get("detail_info", {}).get("list", [])
         print(f" 返回 {len(list_data)} 条数据")
+        for item in list_data:
+            print(f"  - 文件名: {item.get('file_name', '未知')}")
         return list_data
     except Exception as e:
         print(f"列表请求失败 {pdir_fid[:8]}: {str(e)}")
@@ -199,6 +194,10 @@ def get_apks_in_dir(fid):
     apks = [f for f in files if not f.get("dir") and f.get("file_type") == 1 and f.get("file_name", "").endswith(".apk") and not f["file_name"].startswith(("OK影视-电视版", "OK影视-手机版"))]
     txts = [f for f in files if not f.get("dir") and f.get("file_name", "").endswith(".txt")]
     print(f" 目录 {fid[:8]} 找到 {len(apks)} 个符合条件的 APK, {len(txts)} 个 TXT")
+    for apk in apks:
+        print(f"  APK: {apk.get('file_name')}")
+    for txt in txts:
+        print(f"  TXT: {txt.get('file_name')}")
     return apks, txts
 
 def get_latest_subfolder(fid):
@@ -268,23 +267,28 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
         filename = f"Version-{'Pro' if 'Pro版' in name else 'OK'}.txt"
     else:
         filename = name
+        matched = False
         for pattern, new_name in PRO_RENAME_MAP.items():
             if re.search(pattern, name):
                 filename = new_name
+                matched = True
+                print(f" Pro版匹配: {name} → {filename}")
                 break
-        for pattern, new_name in OK_RENAME_MAP.items():
-            if re.search(pattern, name):
-                filename = new_name
-                break
-        if filename == name:
+        if not matched:
+            for pattern, new_name in OK_RENAME_MAP.items():
+                if re.search(pattern, name):
+                    filename = new_name
+                    matched = True
+                    print(f" OK版匹配: {name} → {filename}")
+                    break
+        if not matched:
             filename = name.replace(".apk", "").replace(" ", "_").replace("/", "_") + ".apk"
-        else:
-            print(f" 重命名: {name} → {filename}")
+            print(f" 无匹配，使用默认重命名: {filename}")
 
     # 检查是否已存在于 Release
-    if filename in EXISTING_FILES:
+    if filename.lower() in [f.lower() for f in EXISTING_FILES]:
         print(f" 文件已存在于 Release，跳过下载/上传: {filename}")
-        return [], ""  # 返回空，避免重复
+        return [], ""
 
     with FILES_LOCK:
         if fid in FILES_CACHE:
@@ -323,7 +327,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                     }
                 print(f" 直接下载成功 ({len(urls)} 条链接)")
 
-                # TXT 特殊处理
+                # TXT 处理
                 if is_txt:
                     version = "未知版本"
                     version_match = re.search(r'(\d+\.\d+\.\d+)', name)
@@ -342,6 +346,8 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                         print(f" TXT 下载并保存完成: {filename}")
                     except Exception as e:
                         print(f" TXT 下载失败 {filename}: {str(e)}")
+                        # 记录到 JSON
+                        return [], f"TXT 下载失败: {str(e)}"
                 else:
                     print(f" 开始下载: {filename} ({size:,} bytes)")
                     try:
@@ -365,6 +371,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                         print(f" 下载完成: {filename} ({file_size_mb:.2f} MB)")
                     except Exception as e:
                         print(f" 下载失败 {filename}: {str(e)}")
+                        return [], f"下载失败: {str(e)}"
 
                 return urls, cookies_str
             else:
@@ -374,12 +381,10 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
     except Exception as e:
         print(f" 直接下载异常: {str(e)}")
 
-    # TXT 不需要转存
     if is_txt:
         print(" TXT 文件不需要转存，直接失败处理")
-        return [], ""
+        return [], "TXT 不需要转存"
 
-    # APK 转存备用
     print(f" 直接下载失败，尝试转存 {fid[:8]}...")
     local_fid = copy_file(fid, share_fid_token)
     if not local_fid:
@@ -468,10 +473,10 @@ def main():
         urls, ck = get_original_download(fid, sft, name, size, is_txt=True)
         if urls:
             filename = "Version-Pro.txt"
-            if filename not in EXISTING_FILES:
+            if filename.lower() not in [f.lower() for f in EXISTING_FILES]:
                 with open(filename, 'w', encoding="utf-8") as tf:
                     tf.write("从 " + name + " 提取的版本信息\n\n" + "（内容已下载）")
-                print(f" 已保存并准备上传 Pro TXT: {filename}")
+                print(f" 已保存 Pro TXT: {filename}")
                 downloaded_files.append(filename)
             else:
                 print(f" Version-Pro.txt 已存在于 Release，跳过")
@@ -508,10 +513,10 @@ def main():
             urls, ck = get_original_download(fid, sft, name, size, is_txt=True)
             if urls:
                 filename = "Version-OK.txt"
-                if filename not in EXISTING_FILES:
+                if filename.lower() not in [f.lower() for f in EXISTING_FILES]:
                     with open(filename, 'w', encoding="utf-8") as tf:
                         tf.write("从 " + name + " 提取的版本信息\n\n" + "（内容已下载）")
-                    print(f" 已保存并准备上传 OK TXT: {filename}")
+                    print(f" 已保存 OK TXT: {filename}")
                     downloaded_files.append(filename)
                 else:
                     print(f" Version-OK.txt 已存在于 Release，跳过")
