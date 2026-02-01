@@ -1,21 +1,18 @@
 import os
 import json
 import requests
-import time
 from datetime import datetime
-from tqdm import tqdm
 import re
+from tqdm import tqdm
 
-# ===== 配置区 =====
 WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
 PWD_ID = "cb0ee2b9ac64"
 PAGE_SIZE = 50
 TARGET_DIRS = [
-    "8d6dce95581c49f29183380d3805e9b5",  # OK Pro版目录
-    "f0c75c96e96e4310b96383b4b22040e3",  # OK 标准版目录
+    "8d6dce95581c49f29183380d3805e9b5",
+    "f0c75c96e96e4310b96383b4b22040e3",
 ]
 
-# 重命名映射（Pro版）
 PRO_RENAME_MAP = {
     r"OK影视Pro-电视版-32位-.*\.apk": "leanback-arm64_v7a-pro.apk",
     r"OK影视Pro-电视版-64位-.*\.apk": "leanback-arm64_v8a-pro.apk",
@@ -23,7 +20,6 @@ PRO_RENAME_MAP = {
     r"OK影视Pro-手机版-.* - 模拟器\.apk": "mobile-arm64_v7a-pro.apk",
 }
 
-# 重命名映射（标准版）
 OK_RENAME_MAP = {
     r"海信专版-OK影视-.*\.apk": "hisense-tv-customized.apk",
     r"mobile-armeabi_v7a-.*\.apk": "mobile-arm64_v7a-ok.apk",
@@ -32,18 +28,15 @@ OK_RENAME_MAP = {
     r"leanback-arm64_v8a-.*\.apk": "leanback-arm64_v8a-ok.apk",
 }
 
-# ===== 环境变量 =====
-COOKIE = os.getenv("QUARK_COOKIE")
-STOKEN = os.getenv("QUARK_STOKEN")  # 这个可以不用，因为 Worker 会生成 stoken
+STOKEN = os.getenv("QUARK_STOKEN")
+COOKIE = os.getenv("QUARK_COOKIE") or ""
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Electron/18.3.5.4-b478491100 Safari/537.36",
-    "Referer": "https://drive.quark.cn/",
+    "User-Agent": "Mozilla/5.0 quark-cloud-drive",
     "Content-Type": "application/json",
+    "Cookie": COOKIE,
 }
 
-# ===== 工具函数 =====
 def rename_file(name):
     for pattern, new_name in PRO_RENAME_MAP.items():
         if re.search(pattern, name):
@@ -53,92 +46,80 @@ def rename_file(name):
             return new_name
     return name.replace(".apk", "").replace(" ", "_").replace("/", "_") + ".apk"
 
-def fetch_files_from_worker(pdir_fid, page=1):
-    """调用 Worker 获取文件列表，包括 share_fid_token"""
+def fetch_page(pdir_fid, page=1):
     try:
         r = requests.post(
             WORKER_URL,
             json={
                 "pwd_id": PWD_ID,
                 "pdir_fid": pdir_fid,
-                "page": page,
-                "size": PAGE_SIZE,
+                "_page": page,
+                "_size": PAGE_SIZE,
+                "stoken": STOKEN,
+                "ver": 2,
+                "pr": "ucpro",
+                "fr": "h5",
             },
             headers=HEADERS,
-            timeout=60
+            timeout=60,
         )
         r.raise_for_status()
         data = r.json()
-        files = data.get("files", [])
-        return files
+        return data.get("data", {}).get("detail_info", {}).get("list", [])
     except Exception as e:
         print(f"列表请求失败 {pdir_fid[:8]}: {e}")
         return []
 
-def get_all_files(fid):
-    """分页获取目录内所有文件"""
-    all_files = []
-    page = 1
+def get_apks_in_dir(fid):
+    files, page = [], 1
     while True:
-        files = fetch_files_from_worker(fid, page)
-        if not files:
+        page_data = fetch_page(fid, page)
+        if not page_data:
             break
-        all_files.extend(files)
-        if len(files) < PAGE_SIZE:
+        files.extend(page_data)
+        if len(page_data) < PAGE_SIZE:
             break
         page += 1
-    apks = [f for f in all_files if f["file_type"] == 1 and f["file_name"].endswith(".apk")]
-    txts = [f for f in all_files if f["file_type"] == 1 and f["file_name"].endswith(".txt")]
+    apks = [f for f in files if not f.get("dir") and f.get("file_type") == 1 and f.get("download_url")]
+    txts = [f for f in files if not f.get("dir") and f.get("file_name", "").endswith(".txt") and f.get("download_url")]
     print(f"目录 {fid[:8]} → APK {len(apks)} / TXT {len(txts)}")
     return apks, txts
 
-def download_file(fid, fid_token, name):
-    """下载文件"""
-    download_url = f"https://pan.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=h5&fid={fid}&fid_token={fid_token}"
-    final_name = rename_file(name)
+def download_file(url, filename):
     try:
-        r = requests.get(download_url, headers=HEADERS, stream=True, timeout=300)
+        r = requests.get(url, headers=HEADERS, stream=True, timeout=300)
         r.raise_for_status()
-        total_size = int(r.headers.get('content-length', 0))
-        with open(final_name, 'wb') as f, tqdm(
-            desc=final_name,
-            total=total_size,
-            unit='B',
-            unit_scale=True,
-            unit_divisor=1024,
-        ) as pbar:
+        total_size = int(r.headers.get("content-length", 0))
+        with open(filename, "wb") as f, tqdm(desc=filename, total=total_size, unit="B", unit_scale=True) as pbar:
             for chunk in r.iter_content(8192):
                 if chunk:
                     f.write(chunk)
                     pbar.update(len(chunk))
-        print(f"✅ 下载完成 {final_name}")
-        return final_name
+        print(f"✅ 下载完成 {filename}")
+        return True
     except Exception as e:
-        print(f"❌ 下载失败 {final_name}: {e}")
-        return None
+        print(f"❌ 下载失败 {filename}: {e}")
+        return False
 
-# ===== 主流程 =====
 def main():
-    print("清理旧文件...")
+    # 清理旧文件
     for f in os.listdir():
         if f.endswith((".apk", ".txt")):
-            try: os.remove(f)
-            except: pass
+            os.remove(f)
 
     downloaded_files = []
-
     for idx, fid in enumerate(TARGET_DIRS):
         print(f"\n=== {'OK Pro版' if idx==0 else 'OK 标准版'} ===")
-        apks, txts = get_all_files(fid)
+        apks, txts = get_apks_in_dir(fid)
         for f in txts + apks:
-            fid_ = f["fid"]
-            fid_token = f.get("share_fid_token")
-            if not fid_token:
-                print(f"❌ 没有下载链接 {f['file_name']}")
+            name = f.get("file_name")
+            url = f.get("download_url")
+            if not url:
+                print(f"❌ 没有下载链接 {name}")
                 continue
-            result = download_file(fid_, fid_token, f["file_name"])
-            if result:
-                downloaded_files.append(result)
+            final_name = rename_file(name)
+            if download_file(url, final_name):
+                downloaded_files.append(final_name)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     with open(f"downloads_{ts}.json", "w", encoding="utf-8") as f:
