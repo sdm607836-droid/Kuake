@@ -2,8 +2,8 @@ name: Monitor Quark Share & Upload to Release
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: '0 */6 * * *'  # 注释掉定时执行
+  # schedule:                 # 注释掉定时
+  #   - cron: '0 */6 * * *'
 
 jobs:
   monitor-and-upload:
@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests tqdm
+          pip install requests packaging tqdm
 
       - name: Run monitor script
         env:
@@ -38,7 +38,10 @@ jobs:
         run: |
           RELEASE_TAG="latest"
           RELEASE_TITLE="Latest APK Updates - $(date +'%Y-%m-%d %H:%M')"
-          RELEASE_NOTES=$'自动从夸克分享监控更新\n生成时间: '"$(date +'%Y-%m-%d %H:%M')"'\n包含文件: '"$(ls *.apk 2>/dev/null || echo '无新文件')"
+          APK_FILES=$(ls *.apk 2>/dev/null || echo "无新文件")
+          RELEASE_NOTES="自动从夸克分享监控更新
+生成时间: $(date +'%Y-%m-%d %H:%M')
+包含文件: $APK_FILES"
 
           echo "处理 Release: $RELEASE_TAG"
 
