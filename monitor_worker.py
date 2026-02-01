@@ -129,29 +129,34 @@ def test_personal_drive():
 
 # ===== 列表相关函数 =====
 def fetch_page(pdir_fid, page=1):
-    print(f"请求列表: pdir_fid={pdir_fid[:8]}, page={page}")
+    print(f"直接请求官方接口: pdir_fid={pdir_fid[:8]}, page={page}")
+    url = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail"
+    payload = {
+        "pwd_id": PWD_ID,
+        "stoken": STOKEN,
+        "pdir_fid": pdir_fid,
+        "_page": page,
+        "_size": PAGE_SIZE,
+        "ver": 2,
+        "pr": "ucpro",
+        "fr": "pc",
+    }
     try:
-        r = requests.post(
-            WORKER_URL,
-            json={
-                "pwd_id": PWD_ID,
-                "stoken": STOKEN,
-                "pdir_fid": pdir_fid,
-                "_page": page,
-                "_size": PAGE_SIZE,
-                "ver": 2,
-                "pr": "ucpro",
-                "fr": "h5",
-            },
-            timeout=60,
-        )
-        r.raise_for_status()
-        data = r.json()
-        list_data = data.get("data", {}).get("detail_info", {}).get("list", [])
-        print(f" 返回 {len(list_data)} 条数据")
-        return list_data
+        r = requests.post(url, json=payload, headers=HEADERS, timeout=30)
+        print(f"官方状态码: {r.status_code}")
+        if r.status_code == 200:
+            data = r.json()
+            list_data = data.get("data", {}).get("list", [])
+            print(f" 官方返回 {len(list_data)} 条数据")
+            for item in list_data:
+                if item.get("file_name", "").endswith(".apk"):
+                    print(f" 官方找到 APK: {item['file_name']}")
+            return list_data
+        else:
+            print(f"官方失败: {r.text[:300]}")
+            return []
     except Exception as e:
-        print(f"列表请求失败 {pdir_fid[:8]}: {str(e)}")
+        print(f"官方请求异常: {str(e)}")
         return []
 
 def get_apks_in_dir(fid):
