@@ -85,7 +85,6 @@ def fetch_page(pdir_fid, page=1):
             WORKER_URL,
             json={
                 "pwd_id": PWD_ID,
-                "stoken": STOKEN,
                 "pdir_fid": pdir_fid,
                 "_page": page,
                 "_size": PAGE_SIZE,
