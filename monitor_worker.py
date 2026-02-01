@@ -129,34 +129,39 @@ def test_personal_drive():
 
 # ===== 列表相关函数 =====
 def fetch_page(pdir_fid, page=1):
-    print(f"直接请求官方接口: pdir_fid={pdir_fid[:8]}, page={page}")
+    print(f"请求列表: pdir_fid={pdir_fid[:8]}, page={page}")
     url = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/detail"
-    payload = {
+    params = {
+        "pr": "ucpro",
+        "fr": "pc",
         "pwd_id": PWD_ID,
         "stoken": STOKEN,
         "pdir_fid": pdir_fid,
         "_page": page,
         "_size": PAGE_SIZE,
+        "_fetch_total": "1",
         "ver": 2,
-        "pr": "ucpro",
-        "fr": "pc",
     }
     try:
-        r = requests.post(url, json=payload, headers=HEADERS, timeout=30)
-        print(f"官方状态码: {r.status_code}")
+        r = requests.get(url, params=params, headers=HEADERS, timeout=30)
+        print(f"状态码: {r.status_code}")
+        print(f"响应前500字符: {r.text[:500]}")  # 调试用，看看返回什么
         if r.status_code == 200:
             data = r.json()
+            # 官方返回的是 data.list，而不是 data.detail_info.list
             list_data = data.get("data", {}).get("list", [])
-            print(f" 官方返回 {len(list_data)} 条数据")
+            print(f" 返回 {len(list_data)} 条数据")
+            # 打印所有文件名，便于你看目录里到底有什么
             for item in list_data:
-                if item.get("file_name", "").endswith(".apk"):
-                    print(f" 官方找到 APK: {item['file_name']}")
+                name = item.get("file_name", "未知")
+                typ = "目录" if item.get("dir") else "文件"
+                print(f"  - {typ}: {name}")
             return list_data
         else:
-            print(f"官方失败: {r.text[:300]}")
+            print(f"请求失败: {r.text[:300]}")
             return []
     except Exception as e:
-        print(f"官方请求异常: {str(e)}")
+        print(f"请求异常: {str(e)}")
         return []
 
 def get_apks_in_dir(fid):
