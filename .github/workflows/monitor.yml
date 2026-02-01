@@ -1,9 +1,9 @@
 name: Monitor Quark Share & Upload to Release
 
 on:
-  workflow_dispatch:
-  # schedule:                 # 注释掉定时
-  #   - cron: '0 */6 * * *'
+  workflow_dispatch: # 手动触发
+  # schedule:
+  #   - cron: '0 */6 * * *'  # 定时已注释
 
 jobs:
   monitor-and-upload:
@@ -18,17 +18,17 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests packaging tqdm
+          pip install requests tqdm
 
       - name: Run monitor script
         env:
           QUARK_STOKEN: ${{ secrets.QUARK_STOKEN }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
         run: python monitor_worker.py
 
       - name: Upload APK to Release
@@ -36,21 +36,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
+          set -e
           RELEASE_TAG="latest"
           RELEASE_TITLE="Latest APK Updates - $(date +'%Y-%m-%d %H:%M')"
-          APK_FILES=$(ls *.apk 2>/dev/null || echo "无新文件")
-          RELEASE_NOTES="自动从夸克分享监控更新
-          生成时间: $(date +'%Y-%m-%d %H:%M')
-          包含文件: $APK_FILES"
+          RELEASE_NOTES=$(printf "自动从夸克分享监控更新\n生成时间: %s\n包含文件:\n%s" "$(date +'%Y-%m-%d %H:%M')" "$(ls *.apk 2>/dev/null || echo '无新文件')")
 
           echo "处理 Release: $RELEASE_TAG"
 
           if gh release view $RELEASE_TAG >/dev/null 2>&1; then
-            echo "已存在，正在上传/覆盖..."
-            gh release upload $RELEASE_TAG *.apk --clobber --repo $GITHUB_REPOSITORY || echo "上传失败"
+            echo "已存在，上传/覆盖..."
+            gh release upload $RELEASE_TAG *.apk --clobber --repo $GITHUB_REPOSITORY || echo "无 APK 文件"
           else
-            echo "不存在，正在创建..."
-            gh release create $RELEASE_TAG *.apk \
-              --title "$RELEASE_TITLE" \
-              --notes "$RELEASE_NOTES" \
-              --repo $GITHUB_REPOSITORY || echo "创建失败"
+            echo "不存在，创建..."
+            gh release create $RELEASE_TAG *.apk --title "$RELEASE_TITLE" --notes "$RELEASE_NOTES" --repo $GITHUB_REPOSITORY || echo "创建失败"
+          fi
