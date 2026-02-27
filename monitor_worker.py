@@ -251,13 +251,13 @@ def extract_version_and_changelog(txt_path, edition="OK"):
 
         # 提取更新日志（从常见关键词开始）
         changelog_keywords = [
-            r'更新日志[:：]?',
-            r'更新内容[:：]?',
-            r'变更日志[:：]?',
-            r'更新说明[:：]?',
-            r'What's new[:：]?',
-            r'新版本特性[:：]?',
-            r'本次更新[:：]?',
+            r'更新日志[:]?',
+            r'更新内容[:]?',
+            r'变更日志[:]?',
+            r'更新说明[:]?',
+            r'What's new[:]?',
+            r'新版本特性[:]?',
+            r'本次更新[:]?',
         ]
         changelog = ""
         start_pos = len(content)
