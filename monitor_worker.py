@@ -16,7 +16,7 @@ TARGET_DIRS = [
     "f0c75c96e96e4310b96383b4b22040e3",  # OK 标准版
 ]
 
-# 重命名映射（Pro版）
+# 重命名映射（Pro版） - 完整保留
 PRO_RENAME_MAP = {
     r"OK影视Pro-电视版-32位-.*\.apk": "leanback-armeabi_v7a-pro.apk",
     r"OK影视Pro-电视版-64位-.*\.apk": "leanback-arm64_v8a-pro.apk",
@@ -27,13 +27,11 @@ PRO_RENAME_MAP = {
 # 重命名映射（标准版）
 OK_RENAME_MAP = {
     r"海信专版-OK影视-.*\.apk": "hisense-tv-universal-ok.apk",
-    r"mobile-armeabi_v7a.*\.apk": "mobile-armeabi_v7a-ok.apk",
-    r"mobile-arm64_v8a-.*\.apk": "mobile-arm64_v8a-ok.apk",
-    r"leanback-armeabi_v7a-.*\.apk": "leanback-armeabi_v7a-ok.apk",
-    r"leanback-arm64_v8a-.*\.apk": "leanback-arm64_v8a-ok.apk",
+    r"OK影视-电视版-.*\.apk": "leanback-armeabi_v7a-ok.apk",
+    r"OK影视-手机版-.*\.apk": "mobile-arm64_v8a-ok.apk",
 }
 
-# ===== 自动获取/刷新 stoken（使用官方接口） =====
+# ===== stoken 获取 =====
 def get_share_token(pwd_id=PWD_ID, passcode=""):
     print("正在通过官方接口获取/刷新 stoken...")
     url = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc"
@@ -43,10 +41,7 @@ def get_share_token(pwd_id=PWD_ID, passcode=""):
         "Content-Type": "application/json",
         "Cookie": COOKIE,
     }
-    payload = {
-        "pwd_id": pwd_id,
-        "passcode": passcode,
-    }
+    payload = {"pwd_id": pwd_id, "passcode": passcode}
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         print(f"官方 token 接口状态码: {r.status_code}")
@@ -144,7 +139,7 @@ def fetch_page(pdir_fid, page=1):
         print(f"列表请求失败 {pdir_fid[:8]}: {str(e)}")
         return []
 
-def get_apks_in_dir(fid):
+def get_apks_in_dir(fid, is_pro=False):
     files = []
     page = 1
     while True:
@@ -155,9 +150,23 @@ def get_apks_in_dir(fid):
         if len(page_data) < PAGE_SIZE:
             break
         page += 1
-    apks = [f for f in files if not f.get("dir") and f.get("file_type") == 1 and f.get("file_name", "").endswith(".apk") and not f["file_name"].startswith(("OK影视-电视版", "OK影视-手机版"))]
+
+    if is_pro:
+        # Pro 版：不过滤，全部 APK
+        apks = [f for f in files if not f.get("dir") and f.get("file_type") == 1 and f.get("file_name", "").endswith(".apk")]
+    else:
+        # 标准版：只保留指定的 3 类
+        target_keywords = ["OK影视-电视版", "OK影视-手机版", "海信专版-OK影视"]
+        apks = [
+            f for f in files
+            if not f.get("dir")
+            and f.get("file_type") == 1
+            and f.get("file_name", "").endswith(".apk")
+            and any(kw in f.get("file_name", "") for kw in target_keywords)
+        ]
+
     txts = [f for f in files if not f.get("dir") and f.get("file_name", "").endswith(".txt")]
-    print(f" 目录 {fid[:8]} 找到 {len(apks)} 个符合条件的 APK, {len(txts)} 个 TXT")
+    print(f" 目录 {fid[:8]} 找到 {len(apks)} 个目标 APK, {len(txts)} 个 TXT")
     return apks, txts
 
 def get_latest_subfolder(fid):
@@ -218,7 +227,7 @@ def copy_file(fid, share_fid_token=""):
         print(f" 转存异常 {fid[:8]}: {str(e)}")
         return None
 
-# ===== 判断是否需要下载（文件已存在则跳过） =====
+# ===== 判断是否需要下载 =====
 def should_download(filename):
     if os.path.exists(filename):
         size_mb = os.path.getsize(filename) / (1024 * 1024)
@@ -226,7 +235,7 @@ def should_download(filename):
         return False
     return True
 
-# ===== 获取下载链接 + 下载 + 重命名 + TXT 处理 =====
+# ===== 获取下载链接 + 下载 =====
 def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False):
     if not COOKIE:
         print(f" 无 COOKIE，跳过 {fid[:8]}")
@@ -241,11 +250,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
 
     print(f" 开始获取链接 {fid[:8]}...")
     direct_url = "https://drive-pc.quark.cn/1/clouddrive/file/download?pr=ucpro&fr=pc"
-    direct_payload = {
-        "fids": [fid],
-        "pwd_id": PWD_ID,
-        "stoken": STOKEN,
-    }
+    direct_payload = {"fids": [fid], "pwd_id": PWD_ID, "stoken": STOKEN}
     print(f" 尝试直接下载 {fid[:8]}...")
 
     try:
@@ -262,15 +267,9 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                 cookies_str = "; ".join([f"{k}={v}" for k, v in r.cookies.items()])
                 expires = time.time() + 86400
                 with FILES_LOCK:
-                    FILES_CACHE[fid] = {
-                        "ori_urls": urls,
-                        "cookies": cookies_str,
-                        "expires": expires,
-                        "done": False
-                    }
+                    FILES_CACHE[fid] = {"ori_urls": urls, "cookies": cookies_str, "expires": expires, "done": False}
                 print(f" 直接下载成功 ({len(urls)} 条链接)")
 
-                # 文件名处理 + 下载
                 if is_txt:
                     filename = f"Version-{'Pro' if 'Pro版' in name else 'OK'}.txt"
                     print(f" 开始下载 TXT: {filename}")
@@ -287,30 +286,30 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                     except Exception as e:
                         print(f" TXT 下载失败 {filename}: {str(e)}")
                 else:
-                    # 重命名 APK
                     filename = name
+                    # 先尝试 Pro 版映射
                     for pattern, new_name in PRO_RENAME_MAP.items():
                         if re.search(pattern, name):
                             filename = new_name
                             break
-                    for pattern, new_name in OK_RENAME_MAP.items():
-                        if re.search(pattern, name):
-                            filename = new_name
-                            break
+                    # 再尝试标准版映射
+                    else:
+                        for pattern, new_name in OK_RENAME_MAP.items():
+                            if re.search(pattern, name):
+                                filename = new_name
+                                break
                     if filename == name:
                         filename = name.replace(".apk", "").replace(" ", "_").replace("/", "_") + ".apk"
                     else:
                         print(f" 重命名: {name} → {filename}")
 
                     if not should_download(filename):
-                        return urls, cookies_str  # 虽然跳过下载，但链接还是返回
+                        return urls, cookies_str
 
                     print(f" 开始下载: {filename} ({size:,} bytes)")
                     try:
-                        # 增加间隔，避免连续下载被限
                         print("等待 4 秒，避免触发下载限速...")
                         time.sleep(4)
-
                         dl_headers = HEADERS.copy()
                         dl_headers["Cookie"] = cookies_str
                         dl_r = requests.get(urls[0], headers=dl_headers, stream=True, timeout=600)
@@ -365,13 +364,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
         cookies_str = "; ".join([f"{k}={v}" for k, v in r.cookies.items()])
         expires = time.time() + 86400
         with FILES_LOCK:
-            FILES_CACHE[fid] = {
-                "local_fid": local_fid,
-                "ori_urls": urls,
-                "cookies": cookies_str,
-                "expires": expires,
-                "done": False
-            }
+            FILES_CACHE[fid] = {"local_fid": local_fid, "ori_urls": urls, "cookies": cookies_str, "expires": expires, "done": False}
         print(f" 获取成功 {fid[:8]} ({len(urls)} 条链接)")
         return urls, cookies_str
     except Exception as e:
@@ -388,11 +381,7 @@ def cleanup_transferred_files():
         to_delete = [(fid, info["local_fid"]) for fid, info in FILES_CACHE.items()
                      if not info.get("done") and info.get("expires", 0) < time.time() + 300]
     for fid, local_fid in to_delete:
-        payload = {
-            "filelist": [local_fid],
-            "action_type": 2,
-            "exclude_fids": [],
-        }
+        payload = {"filelist": [local_fid], "action_type": 2, "exclude_fids": []}
         try:
             r = requests.post(delete_url, json=payload, headers=HEADERS, timeout=20)
             if r.status_code == 200:
@@ -406,23 +395,22 @@ def cleanup_transferred_files():
 # ===== 主逻辑 =====
 def main():
     test_personal_drive()
-
     all_apks = []
     download_results = []
     downloaded_files = []
 
-    # 先处理 OK 标准版
-    print("\n" + "="*50)
-    print("=== 第一阶段：处理 OK 标准版（含容易出问题的文件） ===")
-    print("="*50 + "\n")
+    # 第一阶段：OK 标准版 - 只处理指定 3 类
+    print("\n" + "="*70)
+    print("=== 第一阶段：处理 OK 标准版（仅 OK影视-电视版 / OK影视-手机版 / 海信专版） ===")
+    print("="*70 + "\n")
 
     latest = get_latest_subfolder(TARGET_DIRS[1])
     if latest:
         print(f"最新子文件夹：{latest.get('file_name', '?')}")
-        apks2, txts2 = get_apks_in_dir(latest["fid"])
+        apks_std, txts_std = get_apks_in_dir(latest["fid"], is_pro=False)
 
         # TXT
-        for f in txts2:
+        for f in txts_std:
             name = f.get("file_name", "?")
             size = f.get("size", 0)
             fid = f.get("fid", "")
@@ -436,8 +424,8 @@ def main():
                 print(f" 已保存 OK TXT: {filename}")
                 downloaded_files.append(filename)
 
-        # APK - 标准版
-        for f in apks2:
+        # 标准版 APK（只限 3 类）
+        for f in apks_std:
             name = f.get("file_name", "?")
             size = f.get("size", 0)
             fid = f.get("fid", "")
@@ -465,15 +453,15 @@ def main():
                 })
                 print(f" → 处理完成 ({len(urls)} 条链接)")
 
-    # 再处理 OK Pro 版
-    print("\n" + "="*50)
-    print("=== 第二阶段：处理 OK Pro 版 ===")
-    print("="*50 + "\n")
+    # 第二阶段：OK Pro 版 - 全部处理
+    print("\n" + "="*70)
+    print("=== 第二阶段：处理 OK Pro 版（全部文件） ===")
+    print("="*70 + "\n")
 
-    apks1, txts1 = get_apks_in_dir(TARGET_DIRS[0])
+    apks_pro, txts_pro = get_apks_in_dir(TARGET_DIRS[0], is_pro=True)
 
     # TXT
-    for f in txts1:
+    for f in txts_pro:
         name = f.get("file_name", "?")
         size = f.get("size", 0)
         fid = f.get("fid", "")
@@ -487,8 +475,8 @@ def main():
             print(f" 已保存 Pro TXT: {filename}")
             downloaded_files.append(filename)
 
-    # APK - Pro 版
-    for f in apks1:
+    # Pro 版 APK（全部）
+    for f in apks_pro:
         name = f.get("file_name", "?")
         size = f.get("size", 0)
         fid = f.get("fid", "")
@@ -527,7 +515,7 @@ def main():
             json.dump(download_results, f, ensure_ascii=False, indent=2)
         print(f"已保存 {len(download_results)} 条下载信息到 downloads_{ts}.json")
 
-    print("\n已下载/处理的文件（用于上传）:", downloaded_files)
+    print("\n已下载/处理的文件：", downloaded_files)
     print("\n开始清理转存文件...")
     cleanup_transferred_files()
 
