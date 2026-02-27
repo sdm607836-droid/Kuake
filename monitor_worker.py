@@ -9,11 +9,11 @@ from tqdm import tqdm
 
 # ===== 配置区 =====
 WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
-PWD_ID = "cb0ee2b9ac64" # 你的分享 pwd_id
+PWD_ID = "cb0ee2b9ac64"  # 你的分享 pwd_id
 PAGE_SIZE = 50
 TARGET_DIRS = [
-    "8d6dce95581c49f29183380d3805e9b5", # OK Pro版
-    "f0c75c96e96e4310b96383b4b22040e3", # OK 标准版
+    "8d6dce95581c49f29183380d3805e9b5",  # OK Pro版
+    "f0c75c96e96e4310b96383b4b22040e3",  # OK 标准版
 ]
 
 # 重命名映射（Pro版）
@@ -45,6 +45,7 @@ def get_share_token(pwd_id=PWD_ID, passcode=""):
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=10)
         print(f"官方 token 接口状态码: {r.status_code}")
+        print(f"响应: {r.text[:300]}...")  # 调试用
         if r.status_code == 200:
             data = r.json()
             if data.get("code") == 0:
@@ -97,9 +98,9 @@ HEADERS = {
     "Cookie": COOKIE,
 }
 
-# ===== 打印当前目录和文件列表（帮助排查） =====
+# ===== 打印当前目录（排查用） =====
 print("\n当前工作目录:", os.getcwd())
-print("当前目录文件列表:", os.listdir('.'))
+print("当前目录初始文件列表:", os.listdir('.'))
 
 # ===== 测试个人网盘访问 =====
 def test_personal_drive():
@@ -235,12 +236,17 @@ def should_download(filename):
         return False
     return True
 
-# ===== 从 TXT 提取版本号和更新日志 =====
+# ===== 从 TXT 提取版本号和更新日志（更鲁棒版） =====
 def extract_version_and_changelog(txt_path, edition="OK"):
     try:
         with open(txt_path, 'r', encoding='utf-8') as f:
             content = f.read().strip()
 
+        print(f"\n=== TXT 文件内容预览 ({os.path.basename(txt_path)}) 前800字符 ===")
+        print(content[:800] + ("..." if len(content) > 800 else ""))
+        print("=== TXT 内容预览结束 ===\n")
+
+        # 提取版本号
         version_patterns = [
             r'(?:版本|v|Ver|Version|build)\s*[:]?[\s]*([vV]?\d+\.\d+\.\d+(?:[-_][a-zA-Z0-9]+)?)',
             r'(\d+\.\d+\.\d+(?:[-_][a-zA-Z0-9]+)?)',
@@ -253,6 +259,7 @@ def extract_version_and_changelog(txt_path, edition="OK"):
                 version = m.group(1).strip()
                 break
 
+        # 提取更新日志 - 更宽松：找不到关键词就取全部
         changelog_keywords = [
             r'更新日志[:]?',
             r'更新内容[:]?',
@@ -263,23 +270,29 @@ def extract_version_and_changelog(txt_path, edition="OK"):
             r'本次更新[:]?',
             r'更新记录[:]?',
         ]
-        changelog_start = len(content)
+        changelog_start = 0  # 默认从头取
         for kw in changelog_keywords:
             m = re.search(kw, content, re.IGNORECASE)
             if m:
-                changelog_start = m.start()
+                changelog_start = m.end()  # 从关键词后开始取
                 break
 
-        changelog = content[changelog_start:].strip() if changelog_start < len(content) else content.strip()
+        changelog = content[changelog_start:].strip()
+        if not changelog or len(changelog) < 20:
+            changelog = content.strip()  # 如果太短，直接取全部
+
         changelog = re.sub(r'\n{3,}', '\n\n', changelog).strip()
 
         return version, changelog, os.path.basename(txt_path)
 
+    except FileNotFoundError:
+        print(f"TXT 文件不存在: {txt_path}")
+        return "无 TXT 下载", "没有下载到更新日志文件", "无"
     except Exception as e:
         print(f"读取或解析 {txt_path} 失败: {str(e)}")
         return "提取失败", "无法读取 TXT 文件内容", os.path.basename(txt_path)
 
-# ===== 获取下载链接 + 下载 + 提取版本信息 =====
+# ===== 获取下载链接 + 下载 + 强制生成 Version 文件 =====
 def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False):
     if not COOKIE:
         print(f" 无 COOKIE，跳过 {fid[:8]}")
@@ -297,12 +310,13 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
     direct_payload = {"fids": [fid], "pwd_id": PWD_ID, "stoken": STOKEN}
     print(f" 尝试直接下载 {fid[:8]}...")
 
+    urls = []
+    cookies_str = ""
     try:
         r = requests.post(direct_url, json=direct_payload, headers=HEADERS, timeout=30)
         print(f" 直接下载状态码: {r.status_code}")
         if r.status_code == 200:
             data = r.json()
-            urls = []
             if "data" in data and isinstance(data["data"], list):
                 for item in data["data"]:
                     if "download_url" in item and item["download_url"]:
@@ -313,94 +327,6 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                 with FILES_LOCK:
                     FILES_CACHE[fid] = {"ori_urls": urls, "cookies": cookies_str, "expires": expires, "done": False}
                 print(f" 直接下载成功 ({len(urls)} 条链接)")
-
-                if is_txt:
-                    temp_filename = f"temp_txt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                    print(f" 开始下载 TXT: {temp_filename}")
-                    try:
-                        dl_headers = HEADERS.copy()
-                        dl_headers["Cookie"] = cookies_str
-                        dl_r = requests.get(urls[0], headers=dl_headers, stream=True, timeout=300)
-                        dl_r.raise_for_status()
-                        with open(temp_filename, 'wb') as f:
-                            for chunk in dl_r.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
-                        print(f" TXT 下载完成: {temp_filename}")
-
-                        edition = 'Pro' if 'Pro版' in name or 'Pro' in name else 'OK'
-                        version, changelog, source_name = extract_version_and_changelog(temp_filename, edition)
-
-                        final_file = f"Version-{edition}.txt"
-                        abs_path = os.path.abspath(final_file)
-                        print(f"准备追加版本信息到: {abs_path}")
-
-                        with open(final_file, 'a', encoding='utf-8') as vf:
-                            vf.write(f"\n{'='*60}\n")
-                            vf.write(f"版本: {version}\n")
-                            vf.write(f"来源文件名: {source_name}\n")
-                            vf.write(f"提取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                            vf.write("-" * 60 + "\n\n")
-                            vf.write("更新日志:\n\n")
-                            vf.write(changelog if changelog else "未提取到更新日志内容\n")
-                            vf.write("\n\n")
-
-                        print(f"版本信息已追加保存到: {abs_path}")
-                        print(f"最新内容预览:\n版本: {version}\n来源: {source_name}\n日志:\n{changelog[:300]}...\n")
-
-                        try:
-                            os.remove(temp_filename)
-                        except:
-                            pass
-
-                    except Exception as e:
-                        print(f" TXT 处理失败 {name}: {str(e)}")
-
-                else:
-                    filename = name
-                    for pattern, new_name in PRO_RENAME_MAP.items():
-                        if re.search(pattern, name):
-                            filename = new_name
-                            break
-                    else:
-                        for pattern, new_name in OK_RENAME_MAP.items():
-                            if re.search(pattern, name):
-                                filename = new_name
-                                break
-                    if filename == name:
-                        filename = name.replace(".apk", "").replace(" ", "_").replace("/", "_") + ".apk"
-                    else:
-                        print(f" 重命名: {name} → {filename}")
-
-                    if not should_download(filename):
-                        return urls, cookies_str
-
-                    print(f" 开始下载: {filename} ({size:,} bytes)")
-                    try:
-                        print("等待 4 秒，避免触发下载限速...")
-                        time.sleep(4)
-                        dl_headers = HEADERS.copy()
-                        dl_headers["Cookie"] = cookies_str
-                        dl_r = requests.get(urls[0], headers=dl_headers, stream=True, timeout=600)
-                        dl_r.raise_for_status()
-                        total_size = int(dl_r.headers.get('content-length', 0))
-                        with open(filename, 'wb') as f, tqdm(
-                            desc=filename,
-                            total=total_size,
-                            unit='B',
-                            unit_scale=True,
-                            unit_divisor=1024,
-                        ) as pbar:
-                            for chunk in dl_r.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
-                                    pbar.update(len(chunk))
-                        file_size_mb = os.path.getsize(filename) / (1024 * 1024)
-                        print(f" 下载完成: {filename} ({file_size_mb:.2f} MB)")
-                    except Exception as e:
-                        print(f" 下载失败 {filename}: {str(e)}")
-
-                return urls, cookies_str
             else:
                 print(" 直接下载无有效 url")
         else:
@@ -408,7 +334,111 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
     except Exception as e:
         print(f" 直接下载异常: {str(e)}")
 
-    # 转存备用
+    if is_txt:
+        edition = 'Pro' if 'Pro版' in name or 'Pro' in name else 'OK'
+        final_file = f"Version-{edition}.txt"
+        abs_path = os.path.abspath(final_file)
+        print(f"准备处理 TXT 版本文件: {abs_path}")
+
+        if urls:
+            temp_filename = f"temp_txt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            print(f" 开始下载 TXT: {temp_filename}")
+            try:
+                dl_headers = HEADERS.copy()
+                dl_headers["Cookie"] = cookies_str
+                dl_r = requests.get(urls[0], headers=dl_headers, stream=True, timeout=300)
+                dl_r.raise_for_status()
+                with open(temp_filename, 'wb') as f:
+                    for chunk in dl_r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                print(f" TXT 下载完成: {temp_filename}")
+
+                version, changelog, source_name = extract_version_and_changelog(temp_filename, edition)
+
+                with open(final_file, 'a', encoding='utf-8') as vf:
+                    vf.write(f"\n{'='*70}\n")
+                    vf.write(f"版本: {version}\n")
+                    vf.write(f"来源文件名: {source_name}\n")
+                    vf.write(f"提取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    vf.write("-" * 70 + "\n\n")
+                    vf.write("更新日志:\n\n")
+                    vf.write(changelog if changelog else "未提取到更新日志内容（TXT 可能为空或格式异常）\n")
+                    vf.write("\n\n")
+
+                print(f"版本信息已追加到: {abs_path}")
+                print(f"最新日志预览: {changelog[:200]}...")
+
+                try:
+                    os.remove(temp_filename)
+                except:
+                    pass
+
+            except Exception as e:
+                print(f" TXT 下载/处理失败 {name}: {str(e)}")
+
+        # 无论下载成功与否，都确保文件存在
+        if not os.path.exists(final_file):
+            print(f"警告: 未下载到 TXT，强制生成空日志文件 {final_file}")
+            with open(final_file, 'a', encoding='utf-8') as vf:
+                vf.write(f"\n{'='*70}\n")
+                vf.write(f"版本: 无 TXT 下载\n")
+                vf.write(f"来源文件名: {name}\n")
+                vf.write(f"提取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                vf.write("-" * 70 + "\n\n")
+                vf.write("更新日志:\n")
+                vf.write("没有下载到更新日志 TXT 文件，请检查分享目录\n\n")
+
+        return urls, cookies_str
+
+    else:
+        # APK 下载部分（保持不变）
+        filename = name
+        for pattern, new_name in PRO_RENAME_MAP.items():
+            if re.search(pattern, name):
+                filename = new_name
+                break
+        else:
+            for pattern, new_name in OK_RENAME_MAP.items():
+                if re.search(pattern, name):
+                    filename = new_name
+                    break
+        if filename == name:
+            filename = name.replace(".apk", "").replace(" ", "_").replace("/", "_") + ".apk"
+        else:
+            print(f" 重命名: {name} → {filename}")
+
+        if not should_download(filename):
+            return urls, cookies_str
+
+        print(f" 开始下载: {filename} ({size:,} bytes)")
+        try:
+            print("等待 4 秒，避免触发下载限速...")
+            time.sleep(4)
+            dl_headers = HEADERS.copy()
+            dl_headers["Cookie"] = cookies_str
+            dl_r = requests.get(urls[0], headers=dl_headers, stream=True, timeout=600)
+            dl_r.raise_for_status()
+            total_size = int(dl_r.headers.get('content-length', 0))
+            with open(filename, 'wb') as f, tqdm(
+                desc=filename,
+                total=total_size,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+            ) as pbar:
+                for chunk in dl_r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+            file_size_mb = os.path.getsize(filename) / (1024 * 1024)
+            print(f" 下载完成: {filename} ({file_size_mb:.2f} MB)")
+        except Exception as e:
+            print(f" 下载失败 {filename}: {str(e)}")
+
+        return urls, cookies_str
+
+    # 转存备用（如果直接下载失败）
     print(f" 直接下载失败，尝试转存 {fid[:8]}...")
     local_fid = copy_file(fid, share_fid_token)
     if not local_fid:
@@ -476,8 +506,6 @@ def main():
     if latest:
         print(f"最新子文件夹：{latest.get('file_name', '?')}")
         apks_std, txts_std = get_apks_in_dir(latest["fid"], is_pro=False)
-
-        # TXT 处理（标准版）
         for f in txts_std:
             name = f.get("file_name", "?")
             size = f.get("size", 0)
@@ -487,8 +515,6 @@ def main():
             urls, ck = get_original_download(fid, sft, name, size, is_txt=True)
             if urls:
                 downloaded_files.append(f"Version-OK.txt (from {name})")
-
-        # APK 处理（标准版）
         for f in apks_std:
             name = f.get("file_name", "?")
             size = f.get("size", 0)
@@ -519,8 +545,6 @@ def main():
     print("=== 第二阶段：处理 OK Pro 版（全部文件） ===")
     print("="*70 + "\n")
     apks_pro, txts_pro = get_apks_in_dir(TARGET_DIRS[0], is_pro=True)
-
-    # TXT 处理（Pro版）
     for f in txts_pro:
         name = f.get("file_name", "?")
         size = f.get("size", 0)
@@ -530,8 +554,6 @@ def main():
         urls, ck = get_original_download(fid, sft, name, size, is_txt=True)
         if urls:
             downloaded_files.append(f"Version-Pro.txt (from {name})")
-
-    # APK 处理（Pro版）
     for f in apks_pro:
         name = f.get("file_name", "?")
         size = f.get("size", 0)
@@ -572,21 +594,10 @@ def main():
     for df in set(downloaded_files):
         print(f"  - {df}")
 
-    # 打印最终文件内容预览
-    for edition in ['OK', 'Pro']:
-        file_name = f"Version-{edition}.txt"
-        if os.path.exists(file_name):
-            print(f"\n=== {file_name} 内容预览（前 300 字符） ===")
-            with open(file_name, 'r', encoding='utf-8') as f:
-                print(f.read(300) + "...\n")
-        else:
-            print(f"警告: {file_name} 未生成，可能无对应 TXT 文件")
-
-    # ─────────────── 这里添加你要求的打印 ───────────────
+    # 打印最终文件列表
     print("\n=== 最终生成的文件列表 ===")
     print(os.listdir('.'))
     print("\n如果看到 Version-OK.txt / Version-Pro.txt，则已成功生成，可用于 Release")
-    # ──────────────────────────────────────────────────────
 
     print("\n开始清理转存文件...")
     cleanup_transferred_files()
