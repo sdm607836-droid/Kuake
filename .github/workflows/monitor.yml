@@ -1,15 +1,17 @@
-name: Monitor Quark Share & Upload to Release
+name: Monitor Quark & Auto Release
 
 on:
   workflow_dispatch:  # 手动触发
+  push:
+    branches: [ main ]
   # schedule:
-  #   - cron: '0 */6 * * *'  # 每6小时自动运行（可自行取消注释）
+  #   - cron: '0 */6 * * *'  # 每6小时自动运行
 
 jobs:
-  monitor-and-upload:
+  monitor-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # 必须有权限创建/更新 Release 和上传文件
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -27,42 +29,38 @@ jobs:
 
       - name: Run monitor script
         env:
-          QUARK_STOKEN: ${{ secrets.QUARK_STOKEN }}
           QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
+          QUARK_STOKEN: ${{ secrets.QUARK_STOKEN }}
         run: python monitor_worker.py
 
-      - name: Prepare Release Notes from Version files
+      - name: Prepare Release Notes
         id: prepare-notes
         run: |
-          OK_FILE="Version-OK.txt"
-          PRO_FILE="Version-Pro.txt"
+          NOTES="自动监控夸克分享更新\n"
+          NOTES="$NOTES运行时间: $(date '+%Y-%m-%d %H:%M:%S UTC')\n\n"
 
-          NOTES="自动监控夸克分享更新\n生成时间: $(date '+%Y-%m-%d %H:%M:%S')\n\n"
-
-          if [ -f "$OK_FILE" ]; then
-            OK_CONTENT=$(cat "$OK_FILE" | head -n 30 || cat "$OK_FILE")
-            NOTES="$NOTES## OK 标准版\n$OK_CONTENT\n\n"
+          if [ -f "Version-OK.txt" ]; then
+            OK=$(cat "Version-OK.txt" | head -n 50 || cat "Version-OK.txt")
+            NOTES="$NOTES## OK 标准版\n$OK\n\n"
           else
-            NOTES="$NOTES## OK 标准版\n无更新日志\n\n"
+            NOTES="$NOTES## OK 标准版\n无日志文件\n\n"
           fi
 
-          if [ -f "$PRO_FILE" ]; then
-            PRO_CONTENT=$(cat "$PRO_FILE" | head -n 30 || cat "$PRO_FILE")
-            NOTES="$NOTES## Pro 版\n$PRO_CONTENT\n\n"
+          if [ -f "Version-Pro.txt" ]; then
+            PRO=$(cat "Version-Pro.txt" | head -n 50 || cat "Version-Pro.txt")
+            NOTES="$NOTES## Pro 版\n$PRO\n\n"
           else
-            NOTES="$NOTES## Pro 版\n无更新日志\n\n"
+            NOTES="$NOTES## Pro 版\n无日志文件\n\n"
           fi
 
-          # 列出所有上传文件
-          FILES=$(ls *.apk Version-*.txt 2>/dev/null || echo "无新文件")
-          NOTES="$NOTES\n附件文件:\n$FILES"
+          FILES=$(ls *.apk Version-*.txt 2>/dev/null || echo "无文件")
+          NOTES="$NOTES附件文件:\n$FILES"
 
-          # 输出给后续步骤
           echo "notes<<EOF" >> $GITHUB_OUTPUT
           echo "$NOTES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Create or Update GitHub Release
+      - name: Create or Update Release (latest)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
@@ -72,9 +70,7 @@ jobs:
             *.apk
             Version-OK.txt
             Version-Pro.txt
-          fail_on_unmatched_files: false  # 没有文件也不失败
-          generate_release_notes: false
-          prerelease: false
+          fail_on_unmatched_files: false
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
