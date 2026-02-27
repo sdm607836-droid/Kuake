@@ -27,7 +27,7 @@ PRO_RENAME_MAP = {
 # 重命名映射（标准版）
 OK_RENAME_MAP = {
     r"海信专版-OK影视-.*\.apk": "hisense-tv-customized.apk",  
-    r"mobile-armeabi_v7a.*\.apk": "mobile-arm64_v7a-ok.apk", 
+    r"OK影视-手机版-.*\.apk": "mobile-arm64_v7a-ok.apk", 
     r"mobile-arm64_v8a-.*\.apk": "mobile-arm64_v8a-ok.apk",
     r"leanback-armeabi_v7a-.*\.apk": "leanback-arm64_v7a-ok.apk",
     r"leanback-arm64_v8a-.*\.apk": "leanback-arm64_v8a-ok.apk",
