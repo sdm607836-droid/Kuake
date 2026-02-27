@@ -1,15 +1,15 @@
 name: Monitor Quark Share & Upload to Release
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:  # 手动触发
   # schedule:
-  #   - cron: '0 */6 * * *'  # 定时已注释
+  #   - cron: '0 */6 * * *'  # 每6小时自动运行（可自行取消注释）
 
 jobs:
   monitor-and-upload:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write   # 必须有权限创建/更新 Release 和上传文件
 
     steps:
       - name: Checkout repository
@@ -31,22 +31,50 @@ jobs:
           QUARK_COOKIE: ${{ secrets.QUARK_COOKIE }}
         run: python monitor_worker.py
 
-      - name: Upload APK to Release
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      - name: Prepare Release Notes from Version files
+        id: prepare-notes
         run: |
-          set -e
-          RELEASE_TAG="latest"
-          RELEASE_TITLE="Latest APK Updates - $(date +'%Y-%m-%d %H:%M')"
-          RELEASE_NOTES=$(printf "自动从夸克分享监控更新\n生成时间: %s\n包含文件:\n%s" "$(date +'%Y-%m-%d %H:%M')" "$(ls *.apk 2>/dev/null || echo '无新文件')")
+          OK_FILE="Version-OK.txt"
+          PRO_FILE="Version-Pro.txt"
 
-          echo "处理 Release: $RELEASE_TAG"
+          NOTES="自动监控夸克分享更新\n生成时间: $(date '+%Y-%m-%d %H:%M:%S')\n\n"
 
-          if gh release view $RELEASE_TAG >/dev/null 2>&1; then
-            echo "已存在，上传/覆盖..."
-            gh release upload $RELEASE_TAG *.apk --clobber --repo $GITHUB_REPOSITORY || echo "无 APK 文件"
+          if [ -f "$OK_FILE" ]; then
+            OK_CONTENT=$(cat "$OK_FILE" | head -n 30 || cat "$OK_FILE")
+            NOTES="$NOTES## OK 标准版\n$OK_CONTENT\n\n"
           else
-            echo "不存在，创建..."
-            gh release create $RELEASE_TAG *.apk --title "$RELEASE_TITLE" --notes "$RELEASE_NOTES" --repo $GITHUB_REPOSITORY || echo "创建失败"
+            NOTES="$NOTES## OK 标准版\n无更新日志\n\n"
           fi
+
+          if [ -f "$PRO_FILE" ]; then
+            PRO_CONTENT=$(cat "$PRO_FILE" | head -n 30 || cat "$PRO_FILE")
+            NOTES="$NOTES## Pro 版\n$PRO_CONTENT\n\n"
+          else
+            NOTES="$NOTES## Pro 版\n无更新日志\n\n"
+          fi
+
+          # 列出所有上传文件
+          FILES=$(ls *.apk Version-*.txt 2>/dev/null || echo "无新文件")
+          NOTES="$NOTES\n附件文件:\n$FILES"
+
+          # 输出给后续步骤
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest OK影视 Updates
+          body: ${{ steps.prepare-notes.outputs.notes }}
+          files: |
+            *.apk
+            Version-OK.txt
+            Version-Pro.txt
+          fail_on_unmatched_files: false  # 没有文件也不失败
+          generate_release_notes: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
