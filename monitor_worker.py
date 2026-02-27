@@ -24,14 +24,14 @@ PRO_RENAME_MAP = {
     r"OK影视Pro-手机版-.* - 模拟器\.apk": "mobile-armeabi_v7a-pro.apk",
 }
 
-# 重命名映射（标准版）——只保留实际会下载的
+# 重命名映射（标准版）
 OK_RENAME_MAP = {
     r"海信专版-OK影视-.*\.apk": "hisense-tv-universal-ok.apk",
     r"OK影视-电视版-.*\.apk": "leanback-armeabi_v7a-ok.apk",
     r"OK影视-手机版-.*\.apk": "mobile-arm64_v8a-ok.apk",
 }
 
-# ===== stoken 获取（不变） =====
+# ===== stoken 获取 =====
 def get_share_token(pwd_id=PWD_ID, passcode=""):
     print("正在通过官方接口获取/刷新 stoken...")
     url = "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc"
@@ -112,7 +112,7 @@ def test_personal_drive():
         print(f"测试失败: {str(e)}")
     print("=== 测试结束 ===\n")
 
-# ===== 列表相关函数（不变） =====
+# ===== 列表相关函数 =====
 def fetch_page(pdir_fid, page=1):
     print(f"请求列表: pdir_fid={pdir_fid[:8]}, page={page}")
     try:
@@ -179,7 +179,7 @@ def get_latest_subfolder(fid):
     print(f" 找到最新子文件夹: {latest.get('file_name', '?')}")
     return latest
 
-# ===== 转存文件（不变） =====
+# ===== 转存文件 =====
 def copy_file(fid, share_fid_token=""):
     if not COOKIE:
         print(f" 无 COOKIE，跳过转存 {fid[:8]}")
@@ -231,16 +231,17 @@ def should_download(filename):
         return False
     return True
 
-# ===== 新增：从 TXT 提取版本号和更新日志（简体中文，原样保留） =====
+# ===== 从 TXT 提取版本号和更新日志 =====
 def extract_version_and_changelog(txt_path, edition="OK"):
     try:
         with open(txt_path, 'r', encoding='utf-8') as f:
             content = f.read().strip()
 
-        # 提取版本号（多种常见格式）
+        # 尝试提取版本号（多种常见写法）
         version_patterns = [
             r'(?:版本|v|Ver|Version|build)\s*[:：]?\s*([vV]?\d+\.\d+\.\d+(?:[-_][a-zA-Z0-9]+)?)',
             r'(\d+\.\d+\.\d+(?:[-_][a-zA-Z0-9]+)?)',
+            r'v?(\d+\.\d+\.\d+)',
         ]
         version = "未知版本"
         for pat in version_patterns:
@@ -255,36 +256,30 @@ def extract_version_and_changelog(txt_path, edition="OK"):
             r'更新内容[:]?',
             r'变更日志[:]?',
             r'更新说明[:]?',
-            r'What's new[:]?',
+            r"What's new[:]?",
             r'新版本特性[:]?',
             r'本次更新[:]?',
+            r'更新记录[:]?',
         ]
-        changelog = ""
-        start_pos = len(content)
+        changelog_start = len(content)
         for kw in changelog_keywords:
             m = re.search(kw, content, re.IGNORECASE)
             if m:
-                start_pos = m.start()
+                changelog_start = m.start()
                 break
 
-        if start_pos < len(content):
-            changelog = content[start_pos:].strip()
-        else:
-            # 没找到关键词，取后半部分（常见日志在后面）
-            lines = content.splitlines()
-            half = len(lines) // 2
-            changelog = "\n".join(lines[half:]).strip()
+        changelog = content[changelog_start:].strip() if changelog_start < len(content) else content.strip()
 
         # 清理多余空行
         changelog = re.sub(r'\n{3,}', '\n\n', changelog).strip()
 
-        return version, changelog
+        return version, changelog, os.path.basename(txt_path)
 
     except Exception as e:
-        print(f"提取 {txt_path} 失败: {str(e)}")
-        return "提取失败", "无法读取或解析 TXT 文件"
+        print(f"读取或解析 {txt_path} 失败: {str(e)}")
+        return "提取失败", "无法读取 TXT 文件内容", os.path.basename(txt_path)
 
-# ===== 获取下载链接 + 下载（已整合提取逻辑） =====
+# ===== 获取下载链接 + 下载 + 提取版本信息 =====
 def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False):
     if not COOKIE:
         print(f" 无 COOKIE，跳过 {fid[:8]}")
@@ -320,8 +315,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                 print(f" 直接下载成功 ({len(urls)} 条链接)")
 
                 if is_txt:
-                    # 先下载原始 TXT
-                    temp_filename = f"temp_{name}"
+                    temp_filename = f"temp_{name.replace(' ', '_')}"
                     print(f" 开始下载 TXT: {temp_filename}")
                     try:
                         dl_headers = HEADERS.copy()
@@ -334,29 +328,32 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                                     f.write(chunk)
                         print(f" TXT 下载完成: {temp_filename}")
 
-                        # 提取版本和日志
-                        edition = 'Pro' if 'Pro版' in name else 'OK'
-                        version, changelog = extract_version_and_changelog(temp_filename, edition)
+                        # 提取信息
+                        edition = 'Pro' if 'Pro版' in name or 'Pro' in name else 'OK'
+                        version, changelog, source_name = extract_version_and_changelog(temp_filename, edition)
 
-                        # 合并到最终文件（覆盖写入）
+                        # 写入最终文件（覆盖）
                         final_file = f"Version-{edition}.txt"
                         with open(final_file, 'w', encoding='utf-8') as vf:
                             vf.write(f"版本: {version}\n")
-                            vf.write(f"来源: {name}\n")
-                            vf.write(f"提取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-                            vf.write("更新日志:\n")
-                            vf.write(changelog if changelog else "未提取到更新日志，请查看原始 TXT 文件\n")
+                            vf.write(f"来源文件名: {source_name}\n")
+                            vf.write(f"提取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                            vf.write("-" * 50 + "\n\n")
+                            vf.write("更新日志:\n\n")
+                            vf.write(changelog if changelog else "未提取到更新日志内容\n")
 
-                        print(f"版本信息提取完成，已保存到 {final_file}")
+                        print(f"已提取并保存版本信息到 {final_file}")
 
                         # 可选：删除临时文件
-                        # os.remove(temp_filename)
+                        try:
+                            os.remove(temp_filename)
+                        except:
+                            pass
 
                     except Exception as e:
                         print(f" TXT 处理失败 {name}: {str(e)}")
 
                 else:
-                    # APK 下载部分（不变）
                     filename = name
                     for pattern, new_name in PRO_RENAME_MAP.items():
                         if re.search(pattern, name):
@@ -408,7 +405,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
     except Exception as e:
         print(f" 直接下载异常: {str(e)}")
 
-    # 转存备用（不变）
+    # 转存备用
     print(f" 直接下载失败，尝试转存 {fid[:8]}...")
     local_fid = copy_file(fid, share_fid_token)
     if not local_fid:
@@ -440,7 +437,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
         print(f" 获取链接失败 {fid[:8]}: {str(e)}")
         return [], ""
 
-# ===== 删除转存文件（不变） =====
+# ===== 删除转存文件 =====
 def cleanup_transferred_files():
     if not COOKIE:
         print("无 COOKIE，跳过清理")
@@ -461,7 +458,7 @@ def cleanup_transferred_files():
         except Exception as e:
             print(f"删除失败 {local_fid[:8]}: {str(e)}")
 
-# ===== 主逻辑（不变） =====
+# ===== 主逻辑 =====
 def main():
     test_personal_drive()
     all_apks = []
@@ -476,6 +473,8 @@ def main():
     if latest:
         print(f"最新子文件夹：{latest.get('file_name', '?')}")
         apks_std, txts_std = get_apks_in_dir(latest["fid"], is_pro=False)
+
+        # TXT 处理（标准版）
         for f in txts_std:
             name = f.get("file_name", "?")
             size = f.get("size", 0)
@@ -485,6 +484,8 @@ def main():
             urls, ck = get_original_download(fid, sft, name, size, is_txt=True)
             if urls:
                 downloaded_files.append(f"Version-OK.txt (from {name})")
+
+        # APK 处理（标准版）
         for f in apks_std:
             name = f.get("file_name", "?")
             size = f.get("size", 0)
@@ -515,6 +516,8 @@ def main():
     print("=== 第二阶段：处理 OK Pro 版（全部文件） ===")
     print("="*70 + "\n")
     apks_pro, txts_pro = get_apks_in_dir(TARGET_DIRS[0], is_pro=True)
+
+    # TXT 处理（Pro版）
     for f in txts_pro:
         name = f.get("file_name", "?")
         size = f.get("size", 0)
@@ -524,6 +527,8 @@ def main():
         urls, ck = get_original_download(fid, sft, name, size, is_txt=True)
         if urls:
             downloaded_files.append(f"Version-Pro.txt (from {name})")
+
+    # APK 处理（Pro版）
     for f in apks_pro:
         name = f.get("file_name", "?")
         size = f.get("size", 0)
@@ -561,7 +566,7 @@ def main():
         print(f"已保存 {len(download_results)} 条下载信息到 downloads_{ts}.json")
 
     print("\n已生成版本信息文件：")
-    for df in downloaded_files:
+    for df in set(downloaded_files):  # 去重显示
         print(f"  - {df}")
     print("\n开始清理转存文件...")
     cleanup_transferred_files()
