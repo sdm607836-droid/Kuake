@@ -9,11 +9,11 @@ from tqdm import tqdm
 
 # ===== 配置区 =====
 WORKER_URL = "https://broad-mode-cbfa.sdm607836.workers.dev"
-PWD_ID = "cb0ee2b9ac64"  # 你的分享 pwd_id
+PWD_ID = "cb0ee2b9ac64" # 你的分享 pwd_id
 PAGE_SIZE = 50
 TARGET_DIRS = [
-    "8d6dce95581c49f29183380d3805e9b5",  # OK Pro版
-    "f0c75c96e96e4310b96383b4b22040e3",  # OK 标准版
+    "8d6dce95581c49f29183380d3805e9b5", # OK Pro版
+    "f0c75c96e96e4310b96383b4b22040e3", # OK 标准版
 ]
 
 # 重命名映射（Pro版）
@@ -97,6 +97,10 @@ HEADERS = {
     "Cookie": COOKIE,
 }
 
+# ===== 打印当前目录和文件列表（帮助排查） =====
+print("\n当前工作目录:", os.getcwd())
+print("当前目录文件列表:", os.listdir('.'))
+
 # ===== 测试个人网盘访问 =====
 def test_personal_drive():
     test_url = "https://drive-pc.quark.cn/1/clouddrive/file/sort?pr=ucpro&fr=pc&pdir_fid=0&_fetch_total=1&_size=10"
@@ -161,7 +165,7 @@ def get_apks_in_dir(fid, is_pro=False):
             and f.get("file_name", "").endswith(".apk")
             and any(kw in f.get("file_name", "") for kw in target_keywords)
         ]
-    txts = [f for f in files if not f.get("dir") and f.get("file_name", "").endswith(".txt")]
+    txts = [f for f in files if not f.get("dir") and f.get("file_name", "").lower().endswith(".txt")]
     print(f" 目录 {fid[:8]} 找到 {len(apks)} 个目标 APK, {len(txts)} 个 TXT")
     return apks, txts
 
@@ -237,9 +241,8 @@ def extract_version_and_changelog(txt_path, edition="OK"):
         with open(txt_path, 'r', encoding='utf-8') as f:
             content = f.read().strip()
 
-        # 尝试提取版本号（多种常见写法）
         version_patterns = [
-            r'(?:版本|v|Ver|Version|build)\s*[:：]?\s*([vV]?\d+\.\d+\.\d+(?:[-_][a-zA-Z0-9]+)?)',
+            r'(?:版本|v|Ver|Version|build)\s*[:]?[\s]*([vV]?\d+\.\d+\.\d+(?:[-_][a-zA-Z0-9]+)?)',
             r'(\d+\.\d+\.\d+(?:[-_][a-zA-Z0-9]+)?)',
             r'v?(\d+\.\d+\.\d+)',
         ]
@@ -250,7 +253,6 @@ def extract_version_and_changelog(txt_path, edition="OK"):
                 version = m.group(1).strip()
                 break
 
-        # 提取更新日志（从常见关键词开始）
         changelog_keywords = [
             r'更新日志[:]?',
             r'更新内容[:]?',
@@ -269,8 +271,6 @@ def extract_version_and_changelog(txt_path, edition="OK"):
                 break
 
         changelog = content[changelog_start:].strip() if changelog_start < len(content) else content.strip()
-
-        # 清理多余空行
         changelog = re.sub(r'\n{3,}', '\n\n', changelog).strip()
 
         return version, changelog, os.path.basename(txt_path)
@@ -315,7 +315,7 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                 print(f" 直接下载成功 ({len(urls)} 条链接)")
 
                 if is_txt:
-                    temp_filename = f"temp_{name.replace(' ', '_')}"
+                    temp_filename = f"temp_txt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
                     print(f" 开始下载 TXT: {temp_filename}")
                     try:
                         dl_headers = HEADERS.copy()
@@ -328,23 +328,26 @@ def get_original_download(fid, share_fid_token="", name="", size=0, is_txt=False
                                     f.write(chunk)
                         print(f" TXT 下载完成: {temp_filename}")
 
-                        # 提取信息
                         edition = 'Pro' if 'Pro版' in name or 'Pro' in name else 'OK'
                         version, changelog, source_name = extract_version_and_changelog(temp_filename, edition)
 
-                        # 写入最终文件（覆盖）
                         final_file = f"Version-{edition}.txt"
-                        with open(final_file, 'w', encoding='utf-8') as vf:
+                        abs_path = os.path.abspath(final_file)
+                        print(f"准备追加版本信息到: {abs_path}")
+
+                        with open(final_file, 'a', encoding='utf-8') as vf:
+                            vf.write(f"\n{'='*60}\n")
                             vf.write(f"版本: {version}\n")
                             vf.write(f"来源文件名: {source_name}\n")
                             vf.write(f"提取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                            vf.write("-" * 50 + "\n\n")
+                            vf.write("-" * 60 + "\n\n")
                             vf.write("更新日志:\n\n")
                             vf.write(changelog if changelog else "未提取到更新日志内容\n")
+                            vf.write("\n\n")
 
-                        print(f"已提取并保存版本信息到 {final_file}")
+                        print(f"版本信息已追加保存到: {abs_path}")
+                        print(f"最新内容预览:\n版本: {version}\n来源: {source_name}\n日志:\n{changelog[:300]}...\n")
 
-                        # 可选：删除临时文件
                         try:
                             os.remove(temp_filename)
                         except:
@@ -566,8 +569,25 @@ def main():
         print(f"已保存 {len(download_results)} 条下载信息到 downloads_{ts}.json")
 
     print("\n已生成版本信息文件：")
-    for df in set(downloaded_files):  # 去重显示
+    for df in set(downloaded_files):
         print(f"  - {df}")
+
+    # 打印最终文件内容预览
+    for edition in ['OK', 'Pro']:
+        file_name = f"Version-{edition}.txt"
+        if os.path.exists(file_name):
+            print(f"\n=== {file_name} 内容预览（前 300 字符） ===")
+            with open(file_name, 'r', encoding='utf-8') as f:
+                print(f.read(300) + "...\n")
+        else:
+            print(f"警告: {file_name} 未生成，可能无对应 TXT 文件")
+
+    # ─────────────── 这里添加你要求的打印 ───────────────
+    print("\n=== 最终生成的文件列表 ===")
+    print(os.listdir('.'))
+    print("\n如果看到 Version-OK.txt / Version-Pro.txt，则已成功生成，可用于 Release")
+    # ──────────────────────────────────────────────────────
+
     print("\n开始清理转存文件...")
     cleanup_transferred_files()
 
